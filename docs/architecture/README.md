@@ -89,19 +89,18 @@ src/
     domain/                         (new) entities, value objects, invariants
       projects/                     (planned) Project, DeployConfig, HealthCheckSpec
       deployments/                  (planned) Deployment aggregate, state machine, Release
-    ports/                          (new) interfaces implemented by server/
-      command-runner.ts             (planned) run a process somewhere (local or SSH)
-      git-client.ts                 (planned) fetch / checkout / resolve ref → sha
-      container-runtime.ts          (planned) build, run, rename, stop, remove, inspect
-      reverse-proxy.ts              (planned) point public route at a container
-      health-probe.ts               (planned) single HTTP probe attempt
-      deploy-lock.ts                (planned) leased, fenced, single-writer lock
-      log-sink.ts                   (planned) append + stream deployment log lines
-      event-publisher.ts            (planned) status/step events for UI + notifications
-      repositories.ts               (planned) Project / Deployment / Release persistence
-      secret-provider.ts            (planned) resolve credentials by reference
-      clock.ts                      (planned) now(), sleep() — no direct Date.now()
-      id-generator.ts               (planned) id + port allocation
+    ports/                          interfaces implemented by server/
+      git-client.ts                 put the workspace at a ref → resolved sha
+      container-runtime.ts          build, start, inspect, rename, stop, remove, prune
+      reverse-proxy.ts              read the current upstream; point a route at one
+      health-probe.ts               single probe attempt, no thresholds
+      deploy-lock.ts                leased, fenced, single-writer lock
+      log-sink.ts                   open with a redactor, append, complete, read, tail
+      event-publisher.ts            status/step events for UI + notifications
+      repositories.ts               Project / Deployment / Release persistence
+      secret-provider.ts            resolve credentials and environments by reference
+      clock.ts                      now(), sleep() — no direct Date.now()
+      id-generator.ts               deployment and release ids
     application/                    (new) orchestration
       engine/                       (planned) the deployment pipeline (see below)
       use-cases/                    (planned) RequestDeployment, CancelDeployment, …
@@ -109,6 +108,7 @@ src/
 
   server/                           server-only infrastructure
     adapters/                       (new) concrete port implementations
+      command-runner.ts             (planned) run a process on a host — adapter-internal
       ssh/                          (planned) CommandRunner over SSH
       local/                        (planned) CommandRunner over child_process
       git/                          (planned) GitClient built on CommandRunner

@@ -97,15 +97,24 @@ persisted.
 **Purpose.** Express every capability the engine needs as an interface, in the
 engine's language rather than a vendor's.
 
-**Responsibilities.** `CommandRunner` (run a process on _a_ host, capture streams,
-enforce a timeout). `GitClient` (ensure workspace, fetch, checkout, resolve ref →
-sha, read current sha). `ContainerRuntime` (build, run, inspect, rename, stop,
-remove, list by label, prune, read logs). `ReverseProxy` (read current upstream,
-point route at target, reload). `HealthProbe` (one attempt, one result).
-`DeployLock` (acquire, heartbeat, release, all fenced). `LogSink` (append,
-stream, complete). `EventPublisher`. `ProjectRepository`, `DeploymentRepository`,
-`ReleaseRepository`. `SecretProvider`. `Clock`. `IdGenerator` (ids and internal
-port allocation).
+**Responsibilities.** `GitClient` (put the workspace at a ref, return the resolved
+sha). `ContainerRuntime` (build, start, inspect, rename, stop, remove, list by
+label, remove images, report storage headroom). `ReverseProxy` (read current
+upstream, point route at target). `HealthProbe` (one attempt, one result).
+`DeployLock` (acquire, heartbeat, release, find expired — all fenced).
+`DeploymentLogSink` (open with a redactor, append, complete, read, tail).
+`EventPublisher`. `ProjectRepository`, `DeploymentRepository`,
+`ReleaseRepository`. `SecretProvider`. `Clock`. `IdGenerator` (ids only).
+
+**Not a port.** `CommandRunner` — "run a process on _a_ host" — is a transport the
+git, container, and proxy adapters share, and the application layer never calls it.
+It therefore lives with the adapters that compose it (`server/adapters/`), not at a
+boundary the engine depends on: declaring it here would invert a dependency that
+does not cross the layer. Decision D3 is unchanged — SSH remains a transport the tool
+adapters compose rather than a peer capability.
+
+Internal port allocation is not here either. Only the host knows which ports are
+free, so `ContainerRuntime.startContainer` reports the address it actually bound.
 
 **Owns.** The vocabulary of the boundary. Nothing else may define an interface the
 engine depends on.
