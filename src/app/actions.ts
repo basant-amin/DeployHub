@@ -28,7 +28,11 @@ import {
   err,
   ok,
 } from "@/core/shared";
-import type { ActionState } from "@/lib/action-state";
+import { Project } from "@/core/domain";
+import { PROJECT_ISSUE_PATHS } from "@/features/projects/form-spec";
+import { projectInputFromForm } from "@/features/projects/form-values";
+import { attributeIssues } from "@/features/projects/issues";
+import type { ActionState, ProjectFormState } from "@/lib/action-state";
 import { SESSION_COOKIE, expectedToken, isConfigured, tokensMatch } from "@/lib/session";
 import { getPlatform } from "@/server/runtime/platform";
 
@@ -173,6 +177,121 @@ export async function rollback(_previous: ActionState, form: FormData): Promise<
   redirect(`/deployments/${requested.value.id}`);
 }
 
+/* -- Project configuration ----------------------------------------------- */
+
+/**
+ * Register the project.
+ *
+ * Release 1 has one, so this refuses a second rather than pretending to support many and failing
+ * somewhere less obvious.
+ */
+export async function registerProject(
+  _previous: ProjectFormState,
+  form: FormData,
+): Promise<ProjectFormState> {
+  const denied = await requireSession();
+  if (denied !== undefined) {
+    return denied;
+  }
+
+  const platform = getPlatform();
+  const existing = await platform.projects.list();
+  if (!existing.ok) {
+    return toState(existing.error);
+  }
+  if (existing.value.length > 0) {
+    return {
+      ok: false,
+      message: "A project is already registered. Change its configuration in settings instead.",
+    };
+  }
+
+  const { input, values } = projectInputFromForm(form, { id: mintProjectId(), enabled: true });
+  const project = Project.create(input);
+  if (!project.ok) {
+    return formFailure(project.error, values);
+  }
+
+  const saved = await platform.projects.save(project.value);
+  if (!saved.ok) {
+    return { ...toState(saved.error), values };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/settings");
+  redirect("/");
+}
+
+/**
+ * Change the project's configuration.
+ *
+ * The id, the slug, and the enabled flag are carried over rather than read from the form. The slug in
+ * particular: it is embedded in container names, image repositories, and the workspace path, so
+ * changing it would not rename anything — it would orphan everything already on the server. The form
+ * shows it read-only and this is the half of that promise that actually holds.
+ */
+export async function updateProject(
+  _previous: ProjectFormState,
+  form: FormData,
+): Promise<ProjectFormState> {
+  const denied = await requireSession();
+  if (denied !== undefined) {
+    return denied;
+  }
+
+  const platform = getPlatform();
+  const current = await loadOnlyProject();
+  if (!current.ok) {
+    return toState(current.error);
+  }
+
+  const { input, values } = projectInputFromForm(form, {
+    id: current.value.id,
+    enabled: current.value.enabled,
+    slug: current.value.slug,
+  });
+
+  const project = Project.create(input);
+  if (!project.ok) {
+    return formFailure(project.error, values);
+  }
+
+  const saved = await platform.projects.save(project.value);
+  if (!saved.ok) {
+    return { ...toState(saved.error), values };
+  }
+
+  revalidatePath("/");
+  revalidatePath("/settings");
+  return { ok: true, message: "Configuration saved." };
+}
+
+/**
+ * Pause or resume deployments.
+ *
+ * A disabled project keeps its configuration, its history, and whatever it has live — it simply
+ * refuses new deployments. This is how a project is taken out of service without destroying the record
+ * of what it was, which is why there is no delete here.
+ */
+export async function setProjectEnabled(form: FormData): Promise<void> {
+  const denied = await requireSession();
+  if (denied !== undefined) {
+    return;
+  }
+
+  const current = await loadOnlyProject();
+  if (!current.ok) {
+    return;
+  }
+
+  const enable = form.get("enabled") === "true";
+  const updated = enable ? current.value.enable() : current.value.disable();
+  await getPlatform().projects.save(updated);
+
+  revalidatePath("/");
+  revalidatePath("/settings");
+}
+
 /* -- Shared -------------------------------------------------------------- */
 
 /** `undefined` means the caller may proceed. Anything else is the refusal to render. */
@@ -228,4 +347,55 @@ function mintIdempotencyKey(): Result<IdempotencyKey> {
 
 function toState(error: DeploymentError): ActionState {
   return { ok: false, code: error.code, message: error.message };
+}
+
+/**
+ * A domain validation failure, split across the inputs that caused it.
+ *
+ * The message deliberately does not repeat the issues: they are about to appear beside their own
+ * fields, and saying each one twice makes the reader check whether they are the same problem.
+ */
+function formFailure(
+  error: DeploymentError,
+  values: Readonly<Record<string, string>>,
+): ProjectFormState {
+  const { byField, general } = attributeIssues(error.issues, PROJECT_ISSUE_PATHS);
+  const count = Object.keys(byField).length + general.length;
+
+  return {
+    ok: false,
+    code: error.code,
+    message:
+      count === 0
+        ? error.message
+        : count === 1
+          ? "One field needs attention."
+          : `${count} fields need attention.`,
+    byField,
+    general,
+    values,
+  };
+}
+
+/** Release 1 has one project, and both configuration actions operate on it. */
+async function loadOnlyProject(): Promise<Result<Project>> {
+  const projects = await getPlatform().projects.list();
+  if (!projects.ok) {
+    return projects;
+  }
+  const project = projects.value[0];
+  return project === undefined
+    ? err(DeploymentError.of("PROJECT_NOT_FOUND", "No project is registered yet.", { details: {} }))
+    : ok(project);
+}
+
+/**
+ * Mint a project id.
+ *
+ * Not from `IdGenerator`: that port mints deployment and release ids, which the *engine* needs, and a
+ * project is created once by a human at a boundary. Adding a method to a frozen port for a single
+ * caller on the outside would widen the domain's contract to serve infrastructure.
+ */
+function mintProjectId(): string {
+  return `prj-${crypto.randomUUID().replaceAll("-", "")}`;
 }

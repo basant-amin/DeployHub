@@ -31,7 +31,13 @@ export function ProductionHero({
   active: DeploymentSummary | undefined;
   /** The Deploy control. Passed in so this stays a Server Component. */
   deployAction: React.ReactNode;
-  /** The rollback control, rendered inside the hint strip beside the destination it names. */
+  /**
+   * The rollback control, rendered inside the hint strip beside the destination it names.
+   *
+   * Absent when a rollback would be refused. The strip then names the target without promising a
+   * click, because the domain declines a rollback on a paused project and an escape hatch that fails
+   * when pulled is worse than one that is visibly unavailable.
+   */
   rollbackAction: React.ReactNode;
 }) {
   return (
@@ -193,11 +199,16 @@ function RollbackHint({ project, action }: { project: ProjectOverview; action: R
     return null;
   }
   const target = project.rollbackTarget;
+  // Without a control, "one click returns to" is a promise the strip cannot keep.
+  const available = action !== undefined;
+
   return (
     <div className="border-line bg-canvas text-ink-2 mt-5 flex flex-wrap items-center justify-between gap-x-2 gap-y-2 rounded-md border px-3.5 py-2.5 text-[13px]">
       <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <RotateCcw className="text-ink-3 size-3.5" aria-hidden />
-        <span>Rollback available — one click returns to</span>
+        <span>
+          {available ? "Rollback available — one click returns to" : "Rollback target is"}
+        </span>
         <Mono className="text-ink">{shortSha(target.commitSha)}</Mono>
         <span className="text-ink-3">
           (
@@ -207,6 +218,9 @@ function RollbackHint({ project, action }: { project: ProjectOverview; action: R
           />
           )
         </span>
+        {!available && (
+          <span className="text-ink-3">— resume deployments in settings to use it</span>
+        )}
       </span>
       {action}
     </div>

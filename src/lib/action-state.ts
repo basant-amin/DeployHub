@@ -18,3 +18,20 @@ export interface ActionState {
 }
 
 export const IDLE: ActionState = { ok: true };
+
+/**
+ * What the project form gets back.
+ *
+ * The extra fields exist because a configuration form has a different failure shape from a button: the
+ * domain reports *every* bad field at once, and each message belongs beside its own input rather than
+ * in a list at the top.
+ *
+ * `values` carries the submission back so a rejected form redisplays what the operator typed. Losing
+ * twenty filled-in fields to one bad port number is the failure mode this prevents.
+ */
+export interface ProjectFormState extends ActionState {
+  readonly byField?: Readonly<Record<string, readonly string[]>> | undefined;
+  /** Issues that matched no field. Shown above the form; never dropped. */
+  readonly general?: readonly string[] | undefined;
+  readonly values?: Readonly<Record<string, string>> | undefined;
+}

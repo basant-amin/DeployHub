@@ -28,6 +28,14 @@ export default async function ProductionPage() {
   const { project, deployments } = view.history;
   const active = deployments.find((deployment) => deployment.id === project.activeDeploymentId);
 
+  // Offer the rollback only when the domain would accept one: `assessRollback` refuses a paused
+  // project and a project that already has a deployment in flight. Rendering the control anyway would
+  // mean a confirmation dialog whose only possible outcome is a refusal.
+  const rollbackTarget =
+    project.enabled && project.activeDeploymentId === undefined
+      ? project.rollbackTarget
+      : undefined;
+
   return (
     <div className="flex flex-col gap-8">
       {/* The overview polls too, so a deployment started from a CLI or another browser appears here
@@ -54,10 +62,9 @@ export default async function ProductionPage() {
           />
         }
         rollbackAction={
-          project.rollbackTarget === undefined ||
-          project.activeDeploymentId !== undefined ? undefined : (
+          rollbackTarget === undefined ? undefined : (
             <RollbackButton
-              target={project.rollbackTarget}
+              target={rollbackTarget}
               liveCommitSha={project.liveCommitSha}
               route={project.route}
             />
