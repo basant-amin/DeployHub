@@ -10,6 +10,7 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "deployhub": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/deployhub.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
