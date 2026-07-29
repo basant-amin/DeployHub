@@ -2,9 +2,27 @@
 
 Self-hosted deployment platform for Docker applications.
 
-> This repository currently contains the **production-ready project foundation
-> only** — tooling, configuration, architecture skeleton, and quality gates.
-> No deployment, container, auth, or dashboard features are implemented yet.
+> This repository currently contains the **production-ready project foundation and
+> the deployment architecture design** — tooling, configuration, layering, and
+> quality gates. No deployment, container, auth, or dashboard features are
+> implemented yet.
+
+## Architecture
+
+The internal design of the deployment engine is specified in
+[`docs/architecture/`](./docs/architecture/README.md):
+
+| Document                                                      | Contents                                                     |
+| ------------------------------------------------------------- | ------------------------------------------------------------ |
+| [Overview](./docs/architecture/README.md)                     | Layering, folder structure, scope boundary, extension points |
+| [Deployment flow](./docs/architecture/deployment-flow.md)     | _Deploy_ click → completed, step by step                     |
+| [Deployment engine](./docs/architecture/deployment-engine.md) | Lifecycle, states, lock, failure handling, recovery          |
+| [Modules](./docs/architecture/modules.md)                     | Per-module purpose, responsibilities, and boundaries         |
+| [Decisions](./docs/architecture/decisions.md)                 | Decisions taken, and the alternatives rejected               |
+
+Release 1 targets **one server and one project** (One Community). Kubernetes,
+Swarm, multi-region, and cloud provider APIs are out of scope; the ports they would
+attach to are identified in the overview.
 
 ## Requirements
 
@@ -56,15 +74,23 @@ Exact pinned versions live in [`package.json`](./package.json).
 ## Project structure
 
 ```
+docs/
+  architecture/   # Deployment architecture specification
 src/
-  app/          # Next.js App Router (routing + UI shell)
-  components/    # Shared React components
-    ui/          # shadcn/ui primitives (generated)
-  features/      # Vertical feature slices (see features/README.md)
-  core/          # Framework-agnostic domain + application logic
-  server/        # Infrastructure & adapters (server-only)
-  lib/           # Cross-cutting utilities (e.g. cn)
-  config/        # Configuration + environment validation
+  app/            # Next.js App Router (routing + UI shell)
+  components/     # Shared React components
+    ui/           # shadcn/ui primitives (generated)
+  features/       # Vertical feature slices (see features/README.md)
+  core/           # Framework-agnostic domain + application logic
+    shared/       # Domain kernel: Result, errors, ids, time
+    domain/       # Entities, value objects, the deployment state machine
+    ports/        # Interfaces implemented by server/
+    application/  # Deployment engine, use cases, policies
+  server/         # Infrastructure & adapters (server-only)
+    adapters/     # ssh, git, docker, proxy, health, logs, lock, persistence
+    runtime/      # Composition root, worker, heartbeat, reconciler
+  lib/            # Cross-cutting utilities (e.g. cn)
+  config/         # Configuration + environment validation
 ```
 
 The dependency rule points inward: `app`/`features`/`server` may depend on
