@@ -127,8 +127,11 @@ Properties the transition guard enforces. Each is a candidate test.
    unexpired, correctly fenced lock.
 3. **Baseline before build.** `building` is unreachable unless a baseline was
    captured or the deployment is flagged `first_deploy`.
-4. **Health before promotion.** `promoting` is reachable only from a passed
-   `health_checking`. There is no forced or "skip health check" promotion.
+4. **Health before promotion, route before success.** `promoting` is reachable only
+   from a passed `health_checking`; there is no forced or "skip health check"
+   promotion. And no deployment reports `outcome: deployed` — by the normal path or by
+   reconciliation — without recorded verification through its public route, so every
+   `Release`, and therefore every rollback target, was confirmed reachable.
 5. **No going back.** No transition from a terminal state. No re-entering a state.
 6. **Cancellation is bounded.** Cancellation is honored only at step boundaries,
    and never between the proxy switch and its verification.
