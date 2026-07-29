@@ -1,8 +1,8 @@
-import Link from "next/link";
-
+import { Link } from "@/components/ui/link";
 import { Button, Callout, EmptyState, Panel, SectionLabel } from "@/components/ui/primitives";
 import { DeployButton } from "@/features/deployments/components/deploy-button";
 import { DeploymentList } from "@/features/deployments/components/deployment-list";
+import { LiveRefresh } from "@/features/deployments/components/live-refresh";
 import { RollbackButton } from "@/features/deployments/components/rollback-button";
 import { loadProduction } from "@/features/deployments/data";
 import { ProductionHero } from "@/features/projects/components/production-hero";
@@ -30,6 +30,13 @@ export default async function ProductionPage() {
 
   return (
     <div className="flex flex-col gap-8">
+      {/* The overview polls too, so a deployment started from a CLI or another browser appears here
+          without a reload. Its signature is the active deployment and the newest row's state. */}
+      <LiveRefresh
+        live={project.activeDeploymentId !== undefined}
+        signature={`${project.activeDeploymentId ?? "-"}:${active?.state ?? "-"}:${project.liveCommitSha ?? "-"}`}
+      />
+
       <header className="flex items-baseline justify-between">
         <h1 className="text-[20px] font-semibold tracking-tight">{project.name}</h1>
       </header>

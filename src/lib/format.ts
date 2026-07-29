@@ -7,7 +7,13 @@
  * decision, and this is where it is made.
  */
 
-/** `0.4s`, `1m 42s`, `2h 05m`. Compact enough for a table column, exact enough to compare. */
+/**
+ * `0.4s`, `1m 42s`, `2h 05m`. Compact enough for a table column, exact enough to compare.
+ *
+ * Rounding happens once, before the value is split into units. Rounding each unit separately is how
+ * a ticking counter renders 779.6 seconds as `12m 60s` — which it did, on screen, before this was
+ * written this way.
+ */
 export function formatDuration(millis: number | undefined): string {
   if (millis === undefined) {
     return "—";
@@ -15,17 +21,23 @@ export function formatDuration(millis: number | undefined): string {
   if (millis < 1000) {
     return `${Math.max(0, Math.round(millis))}ms`;
   }
-  const totalSeconds = millis / 1000;
+
+  const exactSeconds = millis / 1000;
+  // One decimal below ten seconds: the difference between 0.4s and 1.2s is worth seeing.
+  if (exactSeconds < 10) {
+    return `${exactSeconds.toFixed(1)}s`;
+  }
+
+  const totalSeconds = Math.round(exactSeconds);
   if (totalSeconds < 60) {
-    // One decimal below a minute: the difference between 0.4s and 1.2s is worth seeing.
-    return `${totalSeconds < 10 ? totalSeconds.toFixed(1) : Math.round(totalSeconds)}s`;
+    return `${totalSeconds}s`;
   }
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = Math.round(totalSeconds % 60);
-  if (minutes < 60) {
-    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m ${String(totalSeconds % 60).padStart(2, "0")}s`;
   }
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+  return `${Math.floor(totalMinutes / 60)}h ${String(totalMinutes % 60).padStart(2, "0")}m`;
 }
 
 /**
@@ -52,6 +64,16 @@ export function formatRelative(epochMillis: number, now = Date.now()): string {
     return `${Math.round(seconds / 86_400)}d ago`;
   }
   return new Date(epochMillis).toISOString().slice(0, 10);
+}
+
+/**
+ * How long something has been running. `4.2s elapsed`, `2m 07s elapsed`.
+ *
+ * Takes `now` as a defaulted argument, exactly as `formatRelative` does: the caller is a dynamic
+ * server render where "now" is part of the request, and a test needs to be able to pin it.
+ */
+export function formatElapsed(sinceEpochMillis: number, now = Date.now()): string {
+  return `${formatDuration(Math.max(0, now - sinceEpochMillis))} elapsed`;
 }
 
 /**

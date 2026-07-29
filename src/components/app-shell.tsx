@@ -6,8 +6,7 @@
  * project turns this into a picker, which is a change to this file and nothing else.
  */
 
-import Link from "next/link";
-
+import { Link } from "@/components/ui/link";
 import { signOut } from "@/app/actions";
 import { cn } from "@/lib/utils";
 

@@ -12,10 +12,10 @@
  * nothing in the hero moves when one replaces another.
  */
 
-import Link from "next/link";
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 
+import { Link } from "@/components/ui/link";
 import { deploy } from "@/app/actions";
 import { Button, buttonStyles } from "@/components/ui/primitives";
 import { IDLE } from "@/lib/action-state";

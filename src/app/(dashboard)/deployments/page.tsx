@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
 
+import { Link } from "@/components/ui/link";
 import type { DeploymentSummary } from "@/core/application";
 import { Callout, Panel } from "@/components/ui/primitives";
 import { DeploymentList } from "@/features/deployments/components/deployment-list";
+import { LiveRefresh } from "@/features/deployments/components/live-refresh";
 import { loadHistory } from "@/features/deployments/data";
+import { isLive } from "@/features/deployments/live";
 import { cn } from "@/lib/utils";
-
-import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
@@ -65,8 +66,17 @@ export default async function DeploymentsPage({
 
   const shown = view.deployments.filter((deployment) => matches(deployment, filter));
 
+  // Poll on the unfiltered set, not the shown one: a running deployment that the current filter
+  // hides still has to be watched, or switching to "All" would show a stale row.
+  const running = view.deployments.find((deployment) => isLive(deployment.state));
+
   return (
     <div className="flex flex-col gap-6">
+      <LiveRefresh
+        live={running !== undefined}
+        signature={`${running?.id ?? "-"}:${running?.state ?? "-"}:${view.deployments.length}`}
+      />
+
       <div className="flex flex-wrap items-center justify-between gap-4">
         <h1 className="text-[20px] font-semibold tracking-tight">Deployments</h1>
         <nav className="flex items-center gap-1" aria-label="Filter deployments">

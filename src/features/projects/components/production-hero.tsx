@@ -10,9 +10,9 @@
  * promotion, and it is the single most reassuring fact available to a reader watching a build.
  */
 
-import Link from "next/link";
 import { ArrowUpRight, RotateCcw } from "lucide-react";
 
+import { Link } from "@/components/ui/link";
 import type { DeploymentSummary, ProjectOverview } from "@/core/application";
 import { Mono, Panel } from "@/components/ui/primitives";
 import { StatusDot, statusMeta } from "@/components/ui/status";

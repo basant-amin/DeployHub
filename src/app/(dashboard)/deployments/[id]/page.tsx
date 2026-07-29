@@ -1,18 +1,20 @@
-import Link from "next/link";
 import { ArrowLeft, Container, Fingerprint, GitCommit, Server } from "lucide-react";
 
+import { Link } from "@/components/ui/link";
 import type { DeploymentDetail } from "@/core/application";
 import type { DeploymentState, StepName } from "@/core/domain";
 import { Callout, Mono, Panel, SectionLabel } from "@/components/ui/primitives";
 import { StatusHeadline } from "@/components/ui/status";
 import { BlastRadius } from "@/features/deployments/components/blast-radius";
 import { RedeployButton } from "@/features/deployments/components/deploy-button";
+import { LiveRefresh } from "@/features/deployments/components/live-refresh";
+import { isLive } from "@/features/deployments/live";
 import { RelativeTime } from "@/features/deployments/components/relative-time";
 import { StepLogs } from "@/features/deployments/components/step-logs";
 import { PhaseRail, TrustChecks } from "@/features/deployments/components/step-rail";
 import { derivePhases, phaseOfInterest } from "@/features/deployments/phases";
 import { loadDeployment, loadProduction } from "@/features/deployments/data";
-import { describeTarget, formatDuration, formatRelative } from "@/lib/format";
+import { describeTarget, formatDuration, formatElapsed, formatRelative } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 
@@ -76,9 +78,16 @@ export default async function DeploymentDetailPage({
   const interesting = phaseOfInterest(derivePhases(detail));
   const openStep = interesting === undefined ? undefined : PHASE_TO_STEP[interesting.state];
   const target = describeTarget(detail.commitSha, detail.targetRef);
+  const live = isLive(detail.state);
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Renders nothing; re-runs this server component while the deployment can still change. */}
+      <LiveRefresh
+        live={live}
+        signature={`${detail.state}:${detail.timeline.length}:${detail.logs.length}`}
+      />
+
       <Link
         href="/deployments"
         className="text-ink-2 hover:text-ink inline-flex w-fit items-center gap-1.5 text-[13px] transition-colors duration-100"
@@ -90,7 +99,11 @@ export default async function DeploymentDetailPage({
       <header className="flex flex-col gap-5">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <StatusHeadline state={detail.state} outcome={detail.outcome} />
+            {/* The status changes under the reader while polling, so it is announced rather than
+                only shown. Atomic, so a screen reader reads the whole status and not a fragment. */}
+            <div aria-live="polite" aria-atomic="true">
+              <StatusHeadline state={detail.state} outcome={detail.outcome} />
+            </div>
             <h1 className="mt-3 flex flex-wrap items-baseline gap-x-3">
               <Mono className="text-ink text-[17px]" title={detail.commitSha}>
                 {target.primary}
@@ -105,7 +118,13 @@ export default async function DeploymentDetailPage({
               </span>
             </h1>
             <p className="text-ink-3 mt-1.5 text-[13px]">
-              <span data-numeric>{formatDuration(detail.durationMillis)}</span> · by {detail.actor}
+              {/* `durationMillis` is only set once a deployment finishes, so while it runs this
+                  shows elapsed time instead, advancing with each poll. A dash where a clock should
+                  be reads as "nothing is happening". */}
+              <span data-numeric>
+                {live ? formatElapsed(detail.requestedAt) : formatDuration(detail.durationMillis)}
+              </span>{" "}
+              · by {detail.actor}
               {" · "}
               <RelativeTime
                 epochMillis={detail.finishedAt ?? detail.requestedAt}
@@ -124,7 +143,7 @@ export default async function DeploymentDetailPage({
         /* The retry belongs *inside* the explanation of what went wrong, not floating in a toolbar
            above it — the action and its reason should be read in one movement. */
         actions={
-          detail.isActive ? undefined : (
+          live ? undefined : (
             <RedeployButton
               targetRef={detail.targetRef}
               blocked={project?.activeDeploymentId !== undefined}

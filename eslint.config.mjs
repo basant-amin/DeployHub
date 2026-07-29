@@ -35,6 +35,28 @@ const config = [
       sourceType: "module",
     },
   },
+  // Every route in this app is `force-dynamic`, so a prefetch cannot produce a reusable payload —
+  // and while a deployment page polls, each refresh makes every visible link prefetch again.
+  // `src/components/ui/link.tsx` wraps `next/link` with prefetching off and explains why; this rule
+  // is what keeps that from being a convention someone silently opts out of.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/components/ui/link.tsx"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [
+            {
+              name: "next/link",
+              message:
+                "Import { Link } from '@/components/ui/link' instead — it disables prefetch.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   prettier,
 ];
 

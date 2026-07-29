@@ -8,9 +8,9 @@
  * Entirely server-rendered apart from the timestamp.
  */
 
-import Link from "next/link";
 import { ChevronRight } from "lucide-react";
 
+import { Link } from "@/components/ui/link";
 import type { DeploymentSummary } from "@/core/application";
 import { EmptyState, Mono } from "@/components/ui/primitives";
 import { StatusDot, statusMeta } from "@/components/ui/status";

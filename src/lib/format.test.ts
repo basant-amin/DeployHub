@@ -7,6 +7,7 @@ import {
   formatBytes,
   formatClock,
   formatDuration,
+  formatElapsed,
   formatRelative,
   humanizeCode,
   shortSha,
@@ -23,6 +24,14 @@ describe("formatDuration", () => {
     expect(formatDuration(38_400)).toBe("38s");
     expect(formatDuration(102_000)).toBe("1m 42s");
     expect(formatDuration(3_726_000)).toBe("1h 02m");
+  });
+
+  it("carries a rounded-up remainder into the next unit", () => {
+    // A ticking elapsed counter rendered 779.6s as "12m 60s" before rounding moved ahead of the
+    // split. Every boundary below is a value that produced a nonsense unit.
+    expect(formatDuration(779_600)).toBe("13m 00s");
+    expect(formatDuration(59_700)).toBe("1m 00s");
+    expect(formatDuration(3_599_600)).toBe("1h 00m");
   });
 
   it("renders an unknown duration as a dash rather than zero", () => {
@@ -108,5 +117,17 @@ describe("describeTarget", () => {
       primary: "bbed28c",
       qualifier: "redeploying this commit",
     });
+  });
+});
+
+describe("formatElapsed", () => {
+  it("reads as a clock, not a dash, while something is running", () => {
+    expect(formatElapsed(1_000, 5_200)).toBe("4.2s elapsed");
+    expect(formatElapsed(0, 127_000)).toBe("2m 07s elapsed");
+  });
+
+  it("clamps a future start to zero rather than printing a negative duration", () => {
+    // Possible when the server's clock and the recorded timestamp disagree by a few milliseconds.
+    expect(formatElapsed(5_000, 4_000)).toBe("0ms elapsed");
   });
 });

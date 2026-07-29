@@ -11,7 +11,9 @@
  */
 
 import type { DeploymentDetail } from "@/core/application";
-import type { DeploymentState } from "@/core/domain";
+import { type DeploymentState, isTerminal } from "@/core/domain";
+
+import { isLive } from "./live";
 
 export interface Phase {
   readonly state: DeploymentState;
@@ -36,20 +38,15 @@ const PHASE_LABELS: Partial<Record<DeploymentState, string>> = {
   interrupted: "Interrupted",
 };
 
-/** States that are outcomes rather than work — they end the rail instead of appearing in it. */
-const TERMINAL: ReadonlySet<DeploymentState> = new Set<DeploymentState>([
-  "succeeded",
-  "failed",
-  "rolled_back",
-  "canceled",
-  "rollback_failed",
-]);
-
 export function derivePhases(detail: DeploymentDetail): readonly Phase[] {
   const phases: Phase[] = [];
+  // Whether the *deployment* is still moving, which is what decides if its last phase is running.
+  // An `interrupted` deployment's last phase is finished — the worker that owned it is gone.
+  const live = isLive(detail.state);
 
   for (const [index, entry] of detail.timeline.entries()) {
-    if (TERMINAL.has(entry.state)) {
+    // Terminal states are outcomes rather than work: they end the rail instead of appearing in it.
+    if (isTerminal(entry.state)) {
       continue;
     }
     const label = PHASE_LABELS[entry.state];
@@ -68,7 +65,7 @@ export function derivePhases(detail: DeploymentDetail): readonly Phase[] {
       label,
       at: entry.at,
       durationMillis: closedAt === undefined ? undefined : closedAt - entry.at,
-      status: isLast && detail.isActive ? "running" : failedHere(next) ? "failed" : "done",
+      status: isLast && live ? "running" : failedHere(next) ? "failed" : "done",
     });
   }
 

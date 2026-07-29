@@ -19,6 +19,8 @@ import type { STEP_NAMES } from "@/core/domain";
 import { formatClock } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
+import { LogFollow } from "./log-follow";
+
 type StepName = (typeof STEP_NAMES)[number];
 
 export function StepLogs({
@@ -84,7 +86,13 @@ function StepLogGroup({
         </span>
       </summary>
 
-      <div className="scroll-quiet border-line bg-canvas max-h-[420px] overflow-auto border-t">
+      {/* Only the open group follows its output. A collapsed group that silently scrolled itself to
+          the bottom would land a reader at the end of a step they had just chosen to open. */}
+      <LogFollow
+        follow={open}
+        lineCount={lines.length}
+        className="scroll-quiet border-line bg-canvas max-h-[420px] overflow-auto border-t"
+      >
         {lines.length === 0 ? (
           <p className="text-ink-3 px-4 py-3 text-[12.5px]">No output.</p>
         ) : (
@@ -94,7 +102,7 @@ function StepLogGroup({
             ))}
           </ol>
         )}
-      </div>
+      </LogFollow>
     </details>
   );
 }
