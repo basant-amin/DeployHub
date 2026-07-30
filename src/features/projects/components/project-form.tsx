@@ -141,8 +141,8 @@ function Field({
       : undefined;
 
   const shared = cn(
-    "border-line bg-surface text-ink placeholder:text-ink-3 w-full rounded-md border px-3 text-sm outline-none transition-colors duration-100",
-    "focus-visible:border-line-strong",
+    "border-field bg-surface text-ink placeholder:text-ink-3 w-full rounded-md border px-3 text-sm outline-none transition-colors duration-100",
+    "focus-visible:border-ink-3",
     invalid && "border-bad/60",
     readOnly && "text-ink-2 bg-canvas cursor-not-allowed",
   );

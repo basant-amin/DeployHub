@@ -34,6 +34,7 @@ import { projectInputFromForm } from "@/features/projects/form-values";
 import { attributeIssues } from "@/features/projects/issues";
 import type { ActionState, ProjectFormState } from "@/lib/action-state";
 import { SESSION_COOKIE, expectedToken, isConfigured, tokensMatch } from "@/lib/session";
+import { THEME_COOKIE, type Theme } from "@/lib/theme";
 import { getPlatform } from "@/server/runtime/platform";
 
 /* -- Sign in ------------------------------------------------------------- */
@@ -175,6 +176,25 @@ export async function rollback(_previous: ActionState, form: FormData): Promise<
   revalidatePath("/");
   revalidatePath("/deployments");
   redirect(`/deployments/${requested.value.id}`);
+}
+
+/* -- Appearance ----------------------------------------------------------- */
+
+/**
+ * Remember the chosen theme.
+ *
+ * No session check: this changes nothing about the platform and a signed-out sign-in page is entitled
+ * to a theme. It also does not redirect or revalidate — the client flips `data-theme` itself for
+ * instant feedback, and this exists so the *next* server render agrees rather than flashing back.
+ */
+export async function setTheme(theme: Theme): Promise<void> {
+  const store = await cookies();
+  store.set(THEME_COOKIE, theme, {
+    httpOnly: false,
+    sameSite: "lax",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+  });
 }
 
 /* -- Project configuration ----------------------------------------------- */

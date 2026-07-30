@@ -15,6 +15,12 @@
  *    Deploy button and focus rings and nowhere else.
  * 3. One animation loops — the active status dot. Everything else is a short, functional
  *    transition.
+ *
+ * Every text token below clears 4.5:1 against every surface it is used on — canvas, surface, and
+ * raised — in both themes. The first pass did not: `--ink-3` measured 2.94:1 in dark and 2.56:1 in
+ * light, which is the colour that timestamps, durations, and step labels are drawn in. That is
+ * information, not decoration, so it has to be readable rather than tasteful. Keeping a visible
+ * three-step ramp after raising the floor meant lightening `--ink-2` in dark as well.
  */
 
 @custom-variant light (&:is([data-theme="light"] *));
@@ -26,9 +32,12 @@
   --raised: #1a1a1f;
   --line: #26262b;
   --line-strong: #34343b;
+  /* Boundary of a control — an input, a textarea. WCAG 1.4.11 wants 3:1 for something you have to
+     find in order to use it, which a decorative hairline does not reach. */
+  --field: #61616e;
   --ink: #ededef;
-  --ink-2: #8b8b93;
-  --ink-3: #5b5b63;
+  --ink-2: #a1a1a9;
+  --ink-3: #87878f;
 
   /* -- Accent: the Deploy button and focus rings. Nothing else. --------- */
   --accent: #6e56cf;
@@ -39,9 +48,9 @@
   --status-ok: #30a46c;
   --status-run: #0091ff;
   --status-warn: #f5a524;
-  --status-bad: #e5484d;
-  --status-idle: #8b8b93;
-  --status-mute: #5b5b63;
+  --status-bad: #e7494e;
+  --status-idle: #a1a1a9;
+  --status-mute: #87878f;
 
   /* Tinted backgrounds for callouts. Deliberately very low contrast. */
   --status-ok-bg: #30a46c1a;
@@ -57,20 +66,21 @@
   --raised: #f4f4f5;
   --line: #e4e4e7;
   --line-strong: #d4d4d8;
+  --field: #919194;
   --ink: #18181b;
   --ink-2: #52525b;
-  --ink-3: #a1a1aa;
+  --ink-3: #6b6b74;
 
   --accent: #6e56cf;
   --accent-ink: #ffffff;
   --accent-quiet: #6e56cf1f;
 
-  --status-ok: #218358;
-  --status-run: #0074d4;
+  --status-ok: #207f56;
+  --status-run: #0070cd;
   --status-warn: #a15c07;
   --status-bad: #ce2c31;
-  --status-idle: #70707b;
-  --status-mute: #a1a1aa;
+  --status-idle: #52525b;
+  --status-mute: #6b6b74;
 
   --status-ok-bg: #30a46c14;
   --status-run-bg: #0091ff14;
@@ -86,6 +96,7 @@
   --color-raised: var(--raised);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
+  --color-field: var(--field);
   --color-ink: var(--ink);
   --color-ink-2: var(--ink-2);
   --color-ink-3: var(--ink-3);

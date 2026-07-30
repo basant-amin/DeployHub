@@ -6,12 +6,15 @@ import type { DeploymentState, StepName } from "@/core/domain";
 import { Callout, Mono, Panel, SectionLabel } from "@/components/ui/primitives";
 import { StatusHeadline } from "@/components/ui/status";
 import { BlastRadius } from "@/features/deployments/components/blast-radius";
+import { CopyButton } from "@/features/deployments/components/copy-button";
 import { RedeployButton } from "@/features/deployments/components/deploy-button";
 import { LiveRefresh } from "@/features/deployments/components/live-refresh";
 import { isLive } from "@/features/deployments/live";
+import { RawLogSheet } from "@/features/deployments/components/raw-log-sheet";
 import { RelativeTime } from "@/features/deployments/components/relative-time";
 import { StepLogs } from "@/features/deployments/components/step-logs";
 import { PhaseRail, TrustChecks } from "@/features/deployments/components/step-rail";
+import { diagnosticsText, rawLogText } from "@/features/deployments/diagnostics";
 import { derivePhases, phaseOfInterest } from "@/features/deployments/phases";
 import { loadDeployment, loadProduction } from "@/features/deployments/data";
 import { describeTarget, formatDuration, formatElapsed, formatRelative } from "@/lib/format";
@@ -132,6 +135,16 @@ export default async function DeploymentDetailPage({
               />
             </p>
           </div>
+
+          {/* The whole page as pasteable text. This URL is what gets shared during an incident, and
+              not everyone who needs the facts has an account to open it with. */}
+          <div className="shrink-0">
+            <CopyButton
+              text={diagnosticsText(detail, project?.route)}
+              label="Copy diagnostics"
+              copiedLabel="Copied"
+            />
+          </div>
         </div>
 
         <TrustChecks detail={detail} />
@@ -182,7 +195,12 @@ export default async function DeploymentDetailPage({
         </div>
 
         <div className="flex min-w-0 flex-col gap-3">
-          <SectionLabel>Log</SectionLabel>
+          <div className="flex items-baseline justify-between">
+            <SectionLabel>Log</SectionLabel>
+            {/* The escape hatch from grouping. Quiet, because the grouped view is right almost
+                always — and "almost always" is exactly why this has to exist. */}
+            <RawLogSheet lines={detail.logs} text={rawLogText(detail)} />
+          </div>
           <Panel className="overflow-hidden">
             <StepLogs logs={detail.logs} openStep={openStep} />
           </Panel>

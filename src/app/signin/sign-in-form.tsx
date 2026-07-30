@@ -32,7 +32,7 @@ export function SignInForm({ next }: { next: string | undefined }) {
           required
           aria-invalid={state.ok ? undefined : true}
           aria-describedby={state.ok ? undefined : "signin-error"}
-          className="border-line bg-surface text-ink placeholder:text-ink-3 focus-visible:border-line-strong aria-invalid:border-bad/60 h-10 rounded-md border px-3 text-sm outline-none"
+          className="border-field bg-surface text-ink placeholder:text-ink-3 focus-visible:border-ink-3 aria-invalid:border-bad/60 h-10 rounded-md border px-3 text-sm outline-none"
         />
       </label>
 
