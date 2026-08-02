@@ -12,14 +12,21 @@
  * comparing host state against the record, and a recovery that guesses wrong turns a stalled
  * deployment into an outage — which is the more expensive of the two mistakes.
  *
- * The consequence, stated rather than hidden: a deployment interrupted between the proxy switch
- * and finalization is marked failed while its container is in fact still serving traffic. The
- * route keeps working, the record is pessimistic, and the next deployment corrects it — because
- * baseline capture reads the proxy rather than the record.
+ * The consequence, stated rather than hidden: a deployment interrupted after its container
+ * started is marked failed while that container is in fact still serving traffic. The site keeps
+ * working, the record is pessimistic, and the next deployment corrects it — because baseline
+ * capture reads the host rather than the record.
+ *
+ * The classic strategy makes one case sharper than it was. A worker that died between removing
+ * the previous container and starting the new one leaves the project with *nothing* running, and
+ * this sweep does not start anything. It cannot: choosing which release to bring back is the
+ * engine's decision, made with a lease held. What it does is clear the way — release the lease
+ * and fail the record — so the next deployment can run at all.
  */
 
 import { type Result, DeploymentError, ok } from "@/core/shared";
 import type { Deployment } from "@/core/domain";
+import { projectContainerName } from "@/core/application";
 
 import type { Platform } from "./composition";
 
@@ -92,21 +99,17 @@ async function removeItsContainers(platform: Platform, deployment: Deployment): 
     return 0;
   }
 
+  // The container under the project's name is the one serving traffic — there is only ever one
+  // (D12). Taking it away would turn a bookkeeping problem into an outage, so it is left alone
+  // even though the deployment that started it is being marked failed.
+  const live = projectContainerName(project.value.slug);
+
   let removed = 0;
   for (const container of containers.value) {
     if (container.deploymentId !== deployment.id) {
       continue;
     }
-    // Never remove a container the proxy is pointing at: if this deployment's container is
-    // serving traffic, taking it away would turn a bookkeeping problem into an outage.
-    const live = await platform.proxy.readUpstream(project.value.config.route);
-    if (
-      live.ok &&
-      live.value !== undefined &&
-      container.upstream !== undefined &&
-      live.value.host === container.upstream.host &&
-      live.value.port === container.upstream.port
-    ) {
+    if (live.ok && container.name === live.value) {
       continue;
     }
     const gone = await platform.containers.remove(container.id);

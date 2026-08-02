@@ -21,7 +21,6 @@ import {
   candidate,
   digest,
   driveTo,
-  existingBaseline,
   image,
   makeProject,
   newSha,
@@ -44,7 +43,6 @@ import type {
   IdGenerator,
   ProjectRepository,
   ReleaseRepository,
-  ReverseProxy,
   SecretProvider,
   WorkerId,
 } from ".";
@@ -197,16 +195,6 @@ describe("every port is implementable with domain types", () => {
       environment: new Map([["NODE_ENV", "production"]]),
     });
     expect(started.ok && started.value.state.kind).toBe("running");
-  });
-
-  it("ReverseProxy", async () => {
-    const proxy: ReverseProxy = {
-      readUpstream: async () => ok(existingBaseline.upstream),
-      pointRouteAt: async () => ok(undefined),
-    };
-    const current = await proxy.readUpstream(route);
-    expect(current.ok && current.value?.port).toBe(3001);
-    expect((await proxy.pointRouteAt(route, upstream)).ok).toBe(true);
   });
 
   it("HealthProbe", async () => {

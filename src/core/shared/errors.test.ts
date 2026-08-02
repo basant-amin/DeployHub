@@ -44,8 +44,9 @@ describe("the error catalog", () => {
     //
     // 49 after the domain layer; 58 after the application layer; 67 after the adapters
     // added command, docker, proxy, storage, secret-store, lock and git codes — each alongside
-    // the code that raises it.
-    expect(Object.keys(ERROR_CATALOG)).toHaveLength(67);
+    // the code that raises it. 65 after the classic strategy removed the reverse proxy, and
+    // with it the two codes only its adapter could raise.
+    expect(Object.keys(ERROR_CATALOG)).toHaveLength(65);
   });
 });
 

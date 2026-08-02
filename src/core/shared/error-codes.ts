@@ -129,14 +129,10 @@ export const ERROR_CATALOG = {
   COMMAND_FAILED: "INFRA",
   /** The container runtime did not answer. */
   DOCKER_UNAVAILABLE: "INFRA",
-  /** The reverse proxy's admin interface did not answer. */
-  PROXY_UNAVAILABLE: "INFRA",
   /** The store could not be read or written. */
   STORAGE_FAILED: "INFRA",
   ROUTE_VERIFICATION_FAILED: "INFRA",
   ROLLBACK_FAILED: "INFRA",
-  /** The proxy would not accept or reload the new routing. */
-  PROXY_RELOAD_FAILED: "INFRA",
   DISK_FULL: "INFRA",
 
   // ------------------------------------------------------------------- TIMEOUT

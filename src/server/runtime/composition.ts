@@ -2,7 +2,8 @@
  * The composition root — the one place concrete adapters are chosen.
  *
  * Nothing else in the codebase names an adapter. The engine and the use cases take ports, so
- * swapping SQLite for Postgres or Caddy for Traefik is an edit to this file and nothing else.
+ * swapping SQLite for Postgres, or Docker for another container runtime, is an edit to this
+ * file and nothing else.
  * That property is the return on the whole ports layer, and it only holds if this stays the
  * single point of wiring.
  */
@@ -21,7 +22,6 @@ import {
 import type { WorkerId } from "@/core/ports";
 
 import { LocalCommandRunner } from "../adapters/command-runner";
-import { CaddyReverseProxy } from "../adapters/caddy/reverse-proxy";
 import { DockerContainerRuntime } from "../adapters/docker/container-runtime";
 import { CommandGitClient } from "../adapters/git/git-client";
 import { FetchHealthProbe } from "../adapters/health/health-probe";
@@ -49,13 +49,16 @@ export interface RuntimeConfig {
   readonly workspaceRoot: string;
   /** JSON file of secrets, mode 0600. */
   readonly secretsPath: string;
-  /** Caddy's admin endpoint. */
-  readonly caddyAdminUrl: string;
-  /** The server key inside Caddy's `apps.http.servers`. */
-  readonly caddyServerName: string;
-  /** Address containers are published on, and therefore probed at. */
+  /**
+   * Address containers publish on, and therefore the address they are probed at.
+   *
+   * `127.0.0.1` keeps a deployed application reachable only through the host's proxy,
+   * which is the safer default. `0.0.0.0` reproduces a plain `-p <port>:<port>` and is
+   * what an existing deployment being adopted will usually need until its proxy config
+   * is confirmed.
+   */
   readonly bindHost: string;
-  /** Scheme and port Caddy serves the public route on. */
+  /** Scheme and port the host's proxy serves the public route on. */
   readonly publicScheme: "http" | "https";
   readonly publicPort: number;
   /** Filesystem whose free space preflight checks. */
@@ -70,8 +73,6 @@ export function runtimeConfigFromEnv(env: NodeJS.ProcessEnv = process.env): Runt
     databasePath: env.DEPLOYHUB_DATABASE ?? join(root, "deployhub.db"),
     workspaceRoot: env.DEPLOYHUB_WORKSPACES ?? join(root, "projects"),
     secretsPath: env.DEPLOYHUB_SECRETS ?? join(root, "secrets.json"),
-    caddyAdminUrl: env.DEPLOYHUB_CADDY_ADMIN ?? "http://localhost:2019",
-    caddyServerName: env.DEPLOYHUB_CADDY_SERVER ?? "main",
     bindHost: env.DEPLOYHUB_BIND_HOST ?? "127.0.0.1",
     publicScheme: env.DEPLOYHUB_PUBLIC_SCHEME === "http" ? "http" : "https",
     publicPort: Number(env.DEPLOYHUB_PUBLIC_PORT ?? 443),
@@ -87,7 +88,6 @@ export interface Platform {
   readonly workerId: WorkerId;
   readonly clock: SystemClock;
   readonly containers: DockerContainerRuntime;
-  readonly proxy: CaddyReverseProxy;
   readonly engine: DeploymentEngine;
   readonly requestDeployment: RequestDeployment;
   readonly requestRollback: RequestRollback;
@@ -122,11 +122,6 @@ export function createPlatform(config: RuntimeConfig): Platform {
     bindHost: config.bindHost,
     storagePath: config.storagePath,
   });
-  const proxy = new CaddyReverseProxy({
-    adminUrl: config.caddyAdminUrl,
-    serverName: config.caddyServerName,
-    timeoutMillis: 10_000,
-  });
   const health = new FetchHealthProbe({
     publicScheme: config.publicScheme,
     publicPort: config.publicPort,
@@ -144,7 +139,6 @@ export function createPlatform(config: RuntimeConfig): Platform {
     lock,
     git,
     containers,
-    proxy,
     health,
     logs,
     secrets,
@@ -156,7 +150,6 @@ export function createPlatform(config: RuntimeConfig): Platform {
     workerId,
     clock,
     containers,
-    proxy,
     engine: new DeploymentEngine(ports, workerId),
     requestDeployment: new RequestDeployment(ports),
     requestRollback: new RequestRollback(ports),

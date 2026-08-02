@@ -1,11 +1,10 @@
 /**
  * `ContainerRuntime` — build images, run containers, and report what is on the host.
  *
- * With `ReverseProxy`, this is the port that carries the platform's future: a
- * Kubernetes or Swarm adapter implements these two and nothing else changes
- * (`docs/architecture/README.md` § Extension points). Every signature is therefore
- * written in orchestrator-neutral terms — build a thing, start a thing, tell me what is
- * running — and never in Docker's.
+ * This is the port that carries the platform's future: a Kubernetes or Swarm adapter
+ * implements it and nothing else changes (`docs/architecture/README.md` § Extension
+ * points). Every signature is therefore written in orchestrator-neutral terms — build a
+ * thing, start a thing, tell me what is running — and never in Docker's.
  *
  * The port makes no decisions. It does not choose which images to remove, does not
  * judge whether a container is healthy, and does not stop the live container on its own

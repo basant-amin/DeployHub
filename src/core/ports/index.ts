@@ -6,14 +6,14 @@
  * a port that decided something would be a policy in the wrong layer. Nothing in
  * `core/` implements them except test fakes.
  *
- * Two ports carry the platform's future: `ContainerRuntime` and `ReverseProxy` are
- * exactly what a Kubernetes adapter would implement, which is why they are written in
- * orchestrator-neutral terms and nothing else needs to change when that day comes.
+ * `ContainerRuntime` carries the platform's future: it is exactly what a Kubernetes or
+ * Swarm adapter would implement, which is why it is written in orchestrator-neutral terms
+ * and nothing else needs to change when that day comes.
  *
  * Notably absent, each for a stated reason:
  *
  * - **`CommandRunner`.** Running a process on a host is a transport concern that the
- *   git, container, and proxy adapters share; the application layer never calls it. It
+ *   git and container adapters share; the application layer never calls it. It
  *   belongs inside `server/adapters/`, not at a boundary the engine depends on —
  *   declaring it here would invert a dependency that does not cross the layer.
  * - **An image registry port.** Release 1 builds on the host it deploys to. Registry
@@ -44,8 +44,6 @@ export type {
   ImageBuildRequest,
   StorageHeadroom,
 } from "./container-runtime";
-
-export type { ReverseProxy } from "./reverse-proxy";
 
 export type { HealthProbe, ProbeOutcome, ProbeRequest, ProbeTarget } from "./health-probe";
 
