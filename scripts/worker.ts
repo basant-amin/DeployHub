@@ -16,6 +16,7 @@
  */
 
 import { createPlatform, runtimeConfigFromEnv, type Platform } from "@/server/runtime/composition";
+import { checkRuntime, dockerSocketFromEnv, formatProblems } from "@/server/runtime/startup-check";
 import { DEFAULT_WORKER_OPTIONS, Worker } from "@/server/runtime/worker";
 
 function log(message: string): void {
@@ -23,7 +24,17 @@ function log(message: string): void {
 }
 
 async function main(): Promise<number> {
-  const platform: Platform = createPlatform(runtimeConfigFromEnv());
+  const config = runtimeConfigFromEnv();
+
+  // Before the database is opened, so an unprepared host is reported as an unprepared host
+  // rather than as `ERR_SQLITE_ERROR: unable to open database file` four layers down.
+  const problems = checkRuntime(config, { dockerSocket: dockerSocketFromEnv() });
+  if (problems.length > 0) {
+    console.error(formatProblems(problems));
+    return 1;
+  }
+
+  const platform: Platform = createPlatform(config);
   const worker = new Worker(platform, DEFAULT_WORKER_OPTIONS, log);
 
   // Finish the deployment in flight, then return. A deployment killed midway leaves a container

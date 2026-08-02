@@ -564,6 +564,44 @@ directly. Defaults in parentheses.
 Newest first. Each entry: date, what was completed, what remains, blockers, and the next immediate
 task. **Add an entry after every significant milestone.**
 
+### 2026-08-02 — First VPS install failed; startup check, installer, and `--mount`
+
+**What happened.** The first production install put the containers up before the host was
+prepared. Docker creates a missing bind-mount source as `root:root`, so `/var/lib/deployhub` was
+unwritable by uid 1000. The worker crash-looped on `ERR_SQLITE_ERROR: unable to open database
+file`. The web container was worse: `getPlatform()` is lazy, so Next reported ready, `/signin`
+served 200, the container stayed `running`, and the failure waited for someone to open the
+dashboard and get a 500.
+
+The host-preparation step **was** documented and was skipped. That is not a satisfying root cause:
+a step that can be skipped without immediate consequence will be, and the consequence surfaced
+four layers from the cause. Three fixes, all shipped:
+
+1. **Startup check** (`src/server/runtime/startup-check.ts`). Data root exists, is a directory, is
+   writable — proved by writing a probe file, because permission bits do not catch a read-only
+   mount. Workspace root likewise. `secrets.json` exists, is a file, is mode 600, is owned by this
+   uid, is readable. Docker socket present and openable — an `EACCES` there is a missing
+   `--group-add`, which is otherwise discovered at the first deployment. Every problem is reported
+   together, each with the command that fixes it. The web process runs it in Next's `register()`
+   hook (`src/instrumentation.ts`) so it fails at boot instead of false-greening; the exit lives in
+   `boot.ts` because Next compiles instrumentation for the edge runtime too.
+2. **`docs/ops/install.sh`.** Idempotent, `--dry-run`, and safe by construction: refuses system
+   directories, symlinks, relative paths, `..`, paths shallower than two segments, and `--uid 0`.
+   It **never chowns recursively** — it corrects the three paths it owns and _reports_ anything
+   else with the command, so a mistyped `--root` cannot rewrite a tree.
+3. **`--mount` instead of `-v`** for both required paths. Verified: on a daemon-side path `-v`
+   silently creates `root:root` while `--mount` exits 125 with `bind source path does not exist`.
+
+**Verified.** 441 tests. Against the real daemon: an unprepared host produces all four problems
+with fixes and the web container crash-loops instead of serving; the installer repairs the exact
+`root:root 0755` state and is a no-op on the second run; after it, both containers start, the
+dashboard authenticates, the worker loops, and SQLite writes.
+
+**Next immediate task.** Re-run the install on the VPS: `sudo docs/ops/install.sh`, then recreate
+both containers with the `--mount` commands from `docs/docker.md`.
+
+---
+
 ### 2026-08-02 — Classic Deployment Strategy; DeployHub containerized
 
 **Completed.** Two things, in order.

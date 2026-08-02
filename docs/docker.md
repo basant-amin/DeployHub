@@ -179,9 +179,9 @@ docker run --detach \
   --restart unless-stopped \
   --init \
   --publish 127.0.0.1:8080:3000 \
-  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
   --group-add "$(getent group docker | cut -d: -f3)" \
-  --volume /var/lib/deployhub:/var/lib/deployhub \
+  --mount type=bind,source=/var/lib/deployhub,target=/var/lib/deployhub \
   --env-file /etc/deployhub/deployhub.env \
   --log-opt max-size=10m --log-opt max-file=3 \
   deployhub:current
@@ -195,9 +195,9 @@ docker run --detach \
   --restart unless-stopped \
   --init \
   --stop-timeout 1800 \
-  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
   --group-add "$(getent group docker | cut -d: -f3)" \
-  --volume /var/lib/deployhub:/var/lib/deployhub \
+  --mount type=bind,source=/var/lib/deployhub,target=/var/lib/deployhub \
   --env-file /etc/deployhub/deployhub.env \
   --log-opt max-size=10m --log-opt max-file=3 \
   deployhub:current \
@@ -226,6 +226,19 @@ Every flag, because each is load-bearing:
 mechanism `npm run deployhub` uses. The long command line is the cost of having no bundler and no
 second build output to keep in step. It needs no `node_modules` — everything it touches is `@/…`
 source or a Node builtin.
+
+**`--mount`, not `-v`, and this is not a style preference.** `-v` creates a missing bind source
+as `root:root`, which is how the first production install produced a data root the container could
+not write. `--mount` refuses:
+
+```
+$ docker run --mount type=bind,source=/var/lib/deployhub,target=/var/lib/deployhub …
+docker: Error response from daemon: invalid mount config for type "bind":
+        bind source path does not exist: /var/lib/deployhub
+```
+
+The mistake now fails at the point it is made, with the path in the message, instead of four
+layers later as `ERR_SQLITE_ERROR`. Run the installer first and neither happens.
 
 **No Docker Compose**, deliberately. `docker build`, `docker run`, and nginx are the deployment
 model, matching the existing OneCommunity infrastructure. DeployHub controls container lifecycle
@@ -258,9 +271,9 @@ templating, and no reload — see
 | `/var/run/docker.sock` | `/var/run/docker.sock` | rw   | Build images, stop/remove/run containers, read the daemon version |
 | `/var/lib/deployhub`   | `/var/lib/deployhub`   | rw   | SQLite database + WAL + SHM, project workspaces, secrets file     |
 
-Both are mandatory, on both containers. Without the socket every deployment fails at preflight
-with `DOCKER_UNAVAILABLE`; without the data mount the two containers do not share a database and
-the deployment history dies with the container.
+Both are mandatory, on both containers, and both are declared with `--mount` so that a missing
+source is an immediate error rather than a root-owned directory Docker invented. The startup check
+catches what gets past that — see [Startup check](#startup-check).
 
 ## Environment variables
 
@@ -332,20 +345,30 @@ This file is **not** `.env`, is not in the repository, and is never copied into 
 
 ## Persistent storage
 
-Everything DeployHub must not lose lives under one directory. Create it before the first run:
+Everything DeployHub must not lose lives under one directory. **Prepare it before the first
+`docker run`** — this is not optional, and it cannot be done afterwards:
 
 ```bash
-sudo mkdir -p /var/lib/deployhub/projects
-sudo chown -R 1000:1000 /var/lib/deployhub
-sudo chmod 750 /var/lib/deployhub
-
-sudo install -o 1000 -g 1000 -m 600 /dev/null /var/lib/deployhub/secrets.json
-echo '{}' | sudo -u '#1000' tee /var/lib/deployhub/secrets.json > /dev/null
+sudo docs/ops/install.sh
 ```
 
-`1000:1000` is the `node` user inside the image. Ownership matters twice: the process must be able
-to write the database, and `FileSecretProvider` refuses to read a secrets file that any group or
-other bit can reach, so `secrets.json` must be exactly `0600` **and** owned by 1000.
+That creates `/var/lib/deployhub` and `/var/lib/deployhub/projects` at mode 750, and an empty
+`secrets.json` at mode 600, all owned by uid 1000 — the `node` user inside the image. It is
+idempotent, so re-running it is a no-op, and `--dry-run` shows what it would change first.
+
+Ownership matters twice: the process must be able to write the database, and `FileSecretProvider`
+refuses to read a secrets file that any group or other bit can reach, so `secrets.json` must be
+exactly `0600` **and** owned by 1000.
+
+The installer refuses a `--root` that is a system directory, a symlink, a relative path, or
+shallower than two segments, and it **never chowns recursively**. If it finds files it did not
+create with the wrong owner — the residue of a container that ran before the host was prepared —
+it lists them and prints the command, rather than rewriting a tree on your behalf.
+
+```bash
+sudo docs/ops/install.sh --dry-run                                # show, change nothing
+sudo docs/ops/install.sh --root /srv/deployhub --uid 1500 --gid 1500
+```
 
 | Path                        | Contents                                                     |
 | --------------------------- | ------------------------------------------------------------ |
@@ -354,13 +377,49 @@ other bit can reach, so `secrets.json` must be exactly `0600` **and** owned by 1
 | `projects/<slug>/repo`      | One git checkout per project                                 |
 | `secrets.json`              | Secret values, mode `0600`, read-only to the platform        |
 
-The database runs in WAL mode because the web process and the worker are separate processes sharing
-one file. WAL requires the `-wal` and `-shm` sidecars to live on the same filesystem as the database
-— which is why the whole directory is one bind mount rather than three, and why it must be a real
-local filesystem, never NFS or a network share.
+The database runs in WAL mode because the web process and the worker are separate processes
+sharing one file. WAL requires the `-wal` and `-shm` sidecars to live on the same filesystem as
+the database — which is why the whole directory is one bind mount rather than three, and why it
+must be a real local filesystem, never NFS or a network share.
 
 Deployment history and logs are rows in that database; they need no separate mount. Application
-containers DeployHub starts are the host's containers and outlive DeployHub's own container.
+containers DeployHub starts are the host's containers and outlive DeployHub's own containers.
+
+---
+
+## Startup check
+
+Both containers validate the host before doing anything else, and **refuse to start** if it is
+not ready. The web process does this in Next's `register()` hook (`src/instrumentation.ts`), which
+runs once at server boot — before the first request, and therefore before the container can look
+healthy while being unusable.
+
+Checked, with every problem reported together rather than one per restart:
+
+- the data root exists, is a directory, and is writable by this uid — proved by writing a probe
+  file, not by reading permission bits, because a read-only mount passes the bits and fails the write
+- the workspace root, likewise, when it is not inside the data root
+- `secrets.json` exists, is a regular file, is mode `0600`, is owned by this uid, and is readable
+- the Docker socket is present and openable by this uid
+
+Each problem carries the command that fixes it:
+
+```
+DeployHub cannot start. The host is not prepared:
+
+  1. The data root /var/lib/deployhub is not writable by uid 1000 (owned by 0:0, mode 755): …
+     fix: sudo chown 1000:1000 /var/lib/deployhub && sudo chmod 750 /var/lib/deployhub
+
+The installer does all of this: sudo docs/ops/install.sh
+```
+
+**Why this exists.** On the first production install the data root was `root:root` because Docker
+had created it. The worker crash-looped on `ERR_SQLITE_ERROR: unable to open database file`, four
+layers from the cause. The web container was worse — it served `/signin` with a 200 and reported
+`running`, so `--restart unless-stopped` never fired and nothing indicated a problem until someone
+opened the dashboard and got a 500. The socket check earns its place for the same reason: an
+`EACCES` on `/var/run/docker.sock` means the container is missing `--group-add`, and that is
+otherwise discovered at the first deployment.
 
 ---
 
@@ -398,12 +457,14 @@ No new infrastructure is installed. The host gains no service it did not already
 1. **Check the dashboard port is free**: `ss -ltnp | grep 8080`. Pick another if it is taken.
 2. **Clone the repository** to `/opt/deployhub-src` (build location; not the data root, and not
    `/opt/deployhub`, which is where the image keeps the worker's sources).
-3. **Create the data root and secrets file** — see [Persistent storage](#persistent-storage).
+3. **Prepare the host**: `sudo docs/ops/install.sh`. This must happen before step 6; the
+   containers will refuse to start otherwise, and `--mount` will refuse before they even try.
 4. **Write `/etc/deployhub/deployhub.env`**, `chmod 600`, root-owned.
 5. **Build the image** — see [Build command](#build-command).
 6. **Start both containers** — see [Run command](#run-command).
 7. **Verify the socket**: `docker exec deployhub-worker docker version --format '{{.Server.Version}}'`.
-8. **Verify the worker is looping**: `docker logs deployhub-worker` shows `worker … started`.
+8. **Verify the worker is looping**: `docker logs deployhub-worker` shows `worker … started`. If
+   the host is not prepared it prints a numbered list of problems and exits instead.
 9. **Verify the dashboard**: `curl -sI http://127.0.0.1:8080/signin` returns 200; `/` returns 307
    to `/signin`.
 10. **Configure nginx** for the dashboard host — an additive server block — obtain a certificate,
@@ -519,6 +580,11 @@ endpoints, or rootless Docker — not a tighter `docker run` line.
   configuration arrives via `--env-file`; secret _values_ are read from the bind-mounted
   `secrets.json` at the moment they are used and are never cached in the image or the database.
 - **No install-time script execution.** The build uses `npm ci --ignore-scripts`.
+- **The installer does not chown recursively.** It corrects the three paths it owns and reports
+  anything else, so a mistyped `--root` cannot rewrite ownership of a tree. It also refuses system
+  directories, symlinks, relative paths, and `--uid 0`.
+- **Required mounts are declared with `--mount`**, so a missing source is an error rather than a
+  root-owned directory the daemon invented.
 - **Pinned bases.** Concrete Node and Docker CLI versions, never `latest`, so an image rebuilt for a
   rollback is the image that was rolled back to.
 - **Minimal runtime surface.** No npm, no `next` CLI, no test runner, no compiler, no Docker
