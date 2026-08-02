@@ -1,0 +1,74 @@
+# What the image build is allowed to see.
+#
+# Docker sends this directory to the builder before the first instruction runs, so anything
+# not excluded here is readable by every build stage — including stages whose output is
+# discarded. A file that never enters the context cannot be copied into a layer by mistake.
+#
+# Ordered: secrets and state first, because those are the exclusions that matter.
+
+# ---------------------------------------------------------------------------
+# Secrets and runtime state — must never enter the build context
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+secrets.json
+*.pem
+*.key
+id_rsa*
+
+# The SQLite store and its WAL/SHM sidecars. These live on a bind mount in
+# production; a copy baked into an image would be a stale, shipped database.
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Deployment state, logs, and project workspaces, wherever a local run put them.
+/data/
+/var/
+/logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Reinstalled or regenerated inside the build
+# ---------------------------------------------------------------------------
+node_modules
+.next
+out
+build
+dist
+coverage
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Not needed to build the application
+# ---------------------------------------------------------------------------
+.git
+.gitignore
+.github
+.husky
+docs
+README.md
+*.md
+Dockerfile
+.dockerignore
+
+# Tooling that only runs on a developer machine or in CI.
+#
+# The test and lint configs are deliberately *not* excluded: `next build` type-checks
+# every file `tsconfig.json` includes, and removing some of them from the context would
+# make the container build check a different set of files than `npm run build` does.
+.editorconfig
+.prettierrc.json
+.prettierignore
+.lintstagedrc.json
+.claude
+.vscode
+.idea
+*.iml
+
+# OS noise
+.DS_Store
+Thumbs.db
