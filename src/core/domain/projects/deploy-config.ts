@@ -26,6 +26,7 @@ import {
   type RelativePath,
   type Result,
   type SecretRef,
+  ContainerName,
   ContainerPort,
   GitRef as GitRefCodec,
   GitRepositoryUrl as GitRepositoryUrlCodec,
@@ -55,6 +56,20 @@ export interface DeployConfigInput {
   readonly buildArgs?: unknown;
   /** Pointer to the runtime environment for the container. */
   readonly runtimeEnvRef: unknown;
+  /**
+   * The name the deployed container runs under.
+   *
+   * Configuration rather than a derived value, because on a host that already runs the
+   * application the name is a fact about that host — `one-community` — not something the
+   * platform gets to choose. Registration defaults it to the slug, which is what a project
+   * created from scratch wants.
+   *
+   * Stable for the life of the project. It identifies the running container to `stop`,
+   * `rm`, and `run`, and to baseline capture, so changing it would not rename anything —
+   * it would orphan whatever is running under the old name and then collide with it on
+   * the published port.
+   */
+  readonly containerName: unknown;
   /** The port the application listens on inside the container. */
   readonly containerPort: unknown;
   readonly route: unknown;
@@ -73,6 +88,7 @@ export class DeployConfig {
     readonly buildContext: RelativePath,
     readonly buildArgs: BuildArgs,
     readonly runtimeEnvRef: SecretRef,
+    readonly containerName: ContainerName,
     readonly containerPort: ContainerPort,
     readonly route: PublicRoute,
     readonly healthCheck: HealthCheckSpec,
@@ -95,6 +111,7 @@ export class DeployConfig {
       buildContext: RelativePathCodec.parse(input.buildContext),
       buildArgs: BuildArgs.create(input.buildArgs),
       runtimeEnvRef: SecretRefCodec.parse(input.runtimeEnvRef),
+      containerName: ContainerName.parse(input.containerName),
       containerPort: ContainerPort.parse(input.containerPort),
       route: PublicRoute.create(input.route),
       healthCheck: HealthCheckSpec.create(input.healthCheck),
@@ -114,6 +131,7 @@ export class DeployConfig {
         fields.value.buildContext,
         fields.value.buildArgs,
         fields.value.runtimeEnvRef,
+        fields.value.containerName,
         fields.value.containerPort,
         fields.value.route,
         fields.value.healthCheck,
@@ -132,6 +150,7 @@ export class DeployConfig {
       buildContext: this.buildContext,
       buildArgs: this.buildArgs.toJSON(),
       runtimeEnvRef: this.runtimeEnvRef,
+      containerName: this.containerName,
       containerPort: this.containerPort,
       route: this.route.toJSON(),
       healthCheck: this.healthCheck.toJSON(),

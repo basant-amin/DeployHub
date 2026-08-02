@@ -269,6 +269,7 @@ export async function updateProject(
     id: current.value.id,
     enabled: current.value.enabled,
     slug: current.value.slug,
+    containerName: current.value.config.containerName,
   });
 
   const project = Project.create(input);

@@ -408,8 +408,9 @@ No new infrastructure is installed. The host gains no service it did not already
    to `/signin`.
 10. **Configure nginx** for the dashboard host — an additive server block — obtain a certificate,
     reload.
-11. **Sign in** and register OneCommunity, with `containerPort: 3000` and the container name it
-    already uses.
+11. **Sign in** and register OneCommunity. Set **Container name** to `one-community` — the name
+    the container already runs under — and **Container port** to `3000`. Both are read-only
+    afterwards, because they address something already on the host.
 12. **Confirm the firewall** still denies 8080 from outside.
 
 ## Upgrade procedure
@@ -573,5 +574,6 @@ newer database happily today. The first change that rewrites existing rows ends 
 **The CLI is not in the runtime image.** `scripts/deployhub.ts` needs devDependencies for its
 imports; the worker's tree carries only what the worker touches. Operate through the dashboard.
 
-**One project per container name, and no multi-project UI yet.** The engine and the domain support
-several; the dashboard resolves "the project" as `projects[0]`.
+**No multi-project UI yet.** The engine and the domain support several — each project carries its
+own container name and port — but the dashboard resolves "the project" as `projects[0]`. Registering
+a second project needs that resolved first, and two projects must not share a published port.

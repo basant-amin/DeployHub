@@ -5,10 +5,9 @@ import { unwrapOrThrow } from "@/core/shared";
 import { Duration } from "@/core/shared";
 import { expectOk } from "@/core/shared/result.testing";
 import { HealthCheckSpec, ImageRetention } from "@/core/domain";
-import { makeProject, releaseFrom } from "@/core/domain/deployments/deployment.fixtures";
+import { releaseFrom } from "@/core/domain/deployments/deployment.fixtures";
 import type { ProbeOutcome } from "@/core/ports";
 
-import { projectContainerName } from "./container-naming";
 import { evaluateHealth } from "./health-policy";
 import { imagesToRemove } from "./retention-policy";
 import { MINIMUM_FREE_DISK_BYTES, hasEnoughDisk } from "./thresholds";
@@ -170,20 +169,6 @@ describe("imagesToRemove", () => {
     ];
     const removed = imagesToRemove({ retention, releases, protectedDigests: [] });
     expect(new Set(removed).size).toBe(removed.length);
-  });
-});
-
-describe("projectContainerName", () => {
-  it("is the slug, so it is stable across deployments and typeable by an operator", () => {
-    const project = makeProject();
-    expect(expectOk(projectContainerName(project.slug))).toBe("one-community");
-  });
-
-  it("is the same name every time, which is what lets a deployment replace its predecessor", () => {
-    const project = makeProject();
-    expect(expectOk(projectContainerName(project.slug))).toBe(
-      expectOk(projectContainerName(project.slug)),
-    );
   });
 });
 

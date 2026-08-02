@@ -220,12 +220,20 @@ addressable endpoint. With no password set the dashboard fails closed: every rou
 One data-driven form used by both `/setup` and `/settings`. Every input's `name` **is the domain's
 dotted path** into `ProjectInput`, which is what lets the server rebuild the nested object, the prefill
 flatten a saved project, and a validation issue land on the right input — with no translation table to
-drift. Four fields are genuinely required (name, repository URL, container port, route host); the slug
-and the three references derive from them.
+drift. Four fields are genuinely required (name, repository URL, container port, route host); the slug,
+the container name, and the three references derive from them.
 
-The slug is read-only after creation, in the form **and** in the action: it is embedded in container
-names, image repositories, and the workspace path, so changing it would orphan everything on the
-server rather than rename it.
+The slug **and the container name** are read-only after creation, in the form and in the action.
+The slug is embedded in image repositories and the workspace path; the container name is what
+`stop`, `rm`, `run`, and baseline capture address. Changing either would orphan what is on the
+server rather than rename it — and for the container name it would then collide with the orphan on
+the published port.
+
+**Container name is project configuration** (`config.containerName`), not a derived value. It
+defaults to the slug, which is what a new project wants, and is overridden when adopting an
+application already running on the host under a name the platform did not choose. That is the
+difference between DeployHub fitting onto a working server and requiring the server to be renamed
+to suit it.
 
 There is no delete. A project is taken out of service by **pausing**, which keeps its configuration and
 its history.

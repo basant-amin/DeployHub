@@ -27,9 +27,10 @@ export interface FieldSpec {
   /**
    * Editable on `/setup`, read-only afterwards.
    *
-   * Only the slug. It is embedded in container names, image repositories, and the workspace path, so
-   * changing it does not rename anything — it orphans everything already on the server under the old
-   * one. The domain calls the slug stable; this is what makes the UI agree.
+   * The slug and the container name. Both name something already on the server — the workspace
+   * path and image repository for one, the running container for the other — so changing either
+   * does not rename anything. It orphans what is there under the old name, and then collides with
+   * it on the published port. The domain calls both stable; this is what makes the UI agree.
    */
   readonly fixedAfterCreate?: boolean;
   /**
@@ -119,6 +120,14 @@ export const PROJECT_FORM: readonly FieldGroup[] = [
     caption: "How the container runs.",
     columns: 2,
     fields: [
+      {
+        name: "config.containerName",
+        label: "Container name",
+        hint: "The name the deployed container runs under. Leave blank to use the slug; set it to match an application already running on the host.",
+        placeholder: "derived from the slug",
+        derived: true,
+        fixedAfterCreate: true,
+      },
       {
         name: "config.containerPort",
         label: "Container port",

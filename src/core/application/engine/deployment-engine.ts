@@ -82,7 +82,6 @@ import {
   evaluateHealth,
   hasEnoughDisk,
   imagesToRemove,
-  projectContainerName,
 } from "../policies";
 
 export interface DeploymentEnginePorts {
@@ -276,11 +275,6 @@ export class DeploymentEngine {
     }
     current = starting.value;
 
-    const containerName = projectContainerName(project.slug);
-    if (!containerName.ok) {
-      return this.abandon(current, containerName.error, "start_candidate");
-    }
-
     if (baseline.value.kind === "existing") {
       await this.system(current, "start_candidate", `stopping ${baseline.value.containerName}`);
       const stopped = await this.ports.containers.stop(baseline.value.containerId, STOP_GRACE);
@@ -298,11 +292,11 @@ export class DeploymentEngine {
       }
     }
 
-    await this.system(current, "start_candidate", `starting ${containerName.value}`);
+    await this.system(current, "start_candidate", `starting ${config.containerName}`);
 
     const started = await this.ports.containers.startContainer({
       project,
-      name: containerName.value,
+      name: config.containerName,
       image: built.value.reference,
       imageDigest: built.value.digest,
       commitSha: resolved.value,
@@ -495,8 +489,9 @@ export class DeploymentEngine {
   /**
    * What is live right now, read from the host rather than from the record.
    *
-   * The container carrying this project's name **and** this platform's labels is the live
-   * release: with one container per project (D12), there is nothing else it could be. Under
+   * The container carrying this project's configured container name **and** this platform's
+   * labels is the live release: with one container per project (D12), there is nothing else it
+   * could be. Under
    * the superseded strategy this question needed the proxy, because several containers of one
    * project could be running and only the proxy knew which was serving. That indirection is
    * gone with the second container.
@@ -507,11 +502,6 @@ export class DeploymentEngine {
    * than trusted.
    */
   private async captureBaseline(project: Project): Promise<Result<Baseline>> {
-    const name = projectContainerName(project.slug);
-    if (!name.ok) {
-      return name;
-    }
-
     const containers = await this.ports.containers.findForProject(project);
     if (!containers.ok) {
       return containers;
@@ -519,7 +509,9 @@ export class DeploymentEngine {
 
     // `findForProject` filters on this platform's project label, so anything it returns was
     // started by DeployHub. A namesake started by hand simply is not in this list.
-    const live = containers.value.find((snapshot) => snapshot.name === name.value);
+    const live = containers.value.find(
+      (snapshot) => snapshot.name === project.config.containerName,
+    );
     if (live === undefined) {
       return ok(Baselines.firstDeploy());
     }

@@ -104,6 +104,7 @@ export const validRawConfig = Object.freeze({
   buildContext: ".",
   buildArgs: { NODE_ENV: "production" },
   runtimeEnvRef: "one-community.runtime.env",
+  containerName: "one-community",
   containerPort: 3000,
   route: { host: "app.onecommunity.example", path: "/" },
   healthCheck: {

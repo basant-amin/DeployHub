@@ -81,6 +81,22 @@ describe("projectInputFromForm", () => {
     expect(project.config.imageRepository).toBe("deployhub/one-community");
     expect(project.config.gitCredentialRef).toBe("one-community.git.credentials");
     expect(project.config.runtimeEnvRef).toBe("one-community.runtime.env");
+    expect(project.config.containerName).toBe("one-community");
+  });
+
+  it("takes the container name from the form when the host already runs one", () => {
+    // Adopting an existing deployment: the container is called what it is called, and the
+    // platform has to use that name rather than the one it would have chosen.
+    const { input } = projectInputFromForm(
+      submission({ "config.containerName": "legacy-app-prod" }),
+      { id: "prj-0000000000000001", enabled: true },
+    );
+    const project = expectOk(Project.create(input));
+
+    expect(project.config.containerName).toBe("legacy-app-prod");
+    // Everything else still derives from the slug — the override is scoped to the one field.
+    expect(project.slug).toBe("one-community");
+    expect(project.config.imageRepository).toBe("deployhub/one-community");
   });
 
   it("prefers what was typed over what would be derived", () => {

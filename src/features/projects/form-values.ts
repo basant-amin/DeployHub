@@ -34,8 +34,9 @@ export function projectInputFromForm(
   options: {
     readonly id: string;
     readonly enabled: boolean;
-    /** Forced rather than read from the form on edit, where the slug is fixed. */
+    /** Forced rather than read from the form on edit, where both are fixed. */
     readonly slug?: string;
+    readonly containerName?: string;
   },
 ): ProjectInputFromForm {
   const submitted: Record<string, string> = {};
@@ -45,6 +46,9 @@ export function projectInputFromForm(
   }
   if (options.slug !== undefined) {
     submitted.slug = options.slug;
+  }
+  if (options.containerName !== undefined) {
+    submitted["config.containerName"] = options.containerName;
   }
 
   const filled = { ...submitted, ...derive(submitted) };
@@ -62,7 +66,8 @@ export function projectInputFromForm(
 /**
  * Fill the fields that can be left blank.
  *
- * The slug comes from the name; the three references come from the slug. This is why registering a
+ * The slug comes from the name; the container name and the three references come from the slug.
+ * This is why registering a
  * project needs a name, a repository URL, a port, and a host — and nothing else.
  */
 function derive(values: Readonly<Record<string, string>>): Record<string, string> {
@@ -72,6 +77,11 @@ function derive(values: Readonly<Record<string, string>>): Record<string, string
   if (slug === "") {
     // Nothing to derive from. Leave the rest blank and let the domain report the missing name.
     return derived;
+  }
+  if (values["config.containerName"] === "") {
+    // The slug, which is a legal container name by construction — both are DNS-label shaped.
+    // A project adopting an application already on the host overrides this with its real name.
+    derived["config.containerName"] = slug;
   }
   if (values["config.imageRepository"] === "") {
     derived["config.imageRepository"] = `deployhub/${slug}`;

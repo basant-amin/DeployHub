@@ -9,6 +9,7 @@ import {
   idempotencyKey,
   makeProject,
   targetRef,
+  validRawConfig,
 } from "@/core/domain/deployments/deployment.fixtures";
 
 import { FakeHealth, type TestWorld, digestOf, makeWorld, shaOf } from "./engine.fixtures";
@@ -97,6 +98,46 @@ describe("the happy path", () => {
     expect(world.containers.started.map((s) => s.name)).toEqual([CONTAINER_NAME]);
     // Exactly one container of this project is left standing.
     expect([...world.containers.containers.values()].map((c) => c.name)).toEqual([CONTAINER_NAME]);
+  });
+
+  it("uses the container name from the project's configuration, not the slug", async () => {
+    // The whole point of the field: adopting an application already running on the host under a
+    // name the platform did not choose. If this ever falls back to the slug, a first deployment
+    // would leave the real container running and collide with it on the published port.
+    const project = makeProject({
+      config: { ...validRawConfig, containerName: "legacy-app-prod" },
+    });
+    world.projects.add(project);
+    world.git.resolvesTo = NEW_SHA;
+    world.health.outcomes = [FakeHealth.responded(200)];
+    world.containers.seedLive({
+      name: "legacy-app-prod",
+      commitSha: PREVIOUS_SHA,
+      digest: digestOf("c"),
+      port: LIVE_PORT,
+      deploymentId: world.ids.nextDeploymentId(),
+    });
+    const deployment = unwrapOrThrow(
+      DeploymentAggregate.request({
+        id: world.ids.nextDeploymentId(),
+        projectId: project.id,
+        trigger: "manual",
+        actor,
+        targetRef,
+        idempotencyKey,
+        requestedAt: world.clock.now(),
+      }),
+    );
+
+    const finished = expectOk(await world.engine.run(deployment));
+
+    expect(finished.state).toBe("succeeded");
+    expect(finished.candidate?.name).toBe("legacy-app-prod");
+    // It recognised the existing container as the baseline rather than treating this as a first
+    // deployment, and replaced it in place.
+    expect(finished.isFirstDeploy).toBe(false);
+    expect(world.containers.stopped).toHaveLength(1);
+    expect(world.containers.started.map((s) => s.name)).toEqual(["legacy-app-prod"]);
   });
 
   it("starts the new container from the digest just built", async () => {

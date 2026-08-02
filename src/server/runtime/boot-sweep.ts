@@ -26,7 +26,6 @@
 
 import { type Result, DeploymentError, ok } from "@/core/shared";
 import type { Deployment } from "@/core/domain";
-import { projectContainerName } from "@/core/application";
 
 import type { Platform } from "./composition";
 
@@ -99,17 +98,17 @@ async function removeItsContainers(platform: Platform, deployment: Deployment): 
     return 0;
   }
 
-  // The container under the project's name is the one serving traffic — there is only ever one
-  // (D12). Taking it away would turn a bookkeeping problem into an outage, so it is left alone
-  // even though the deployment that started it is being marked failed.
-  const live = projectContainerName(project.value.slug);
+  // The container under the project's configured name is the one serving traffic — there is only
+  // ever one (D12). Taking it away would turn a bookkeeping problem into an outage, so it is left
+  // alone even though the deployment that started it is being marked failed.
+  const live = project.value.config.containerName;
 
   let removed = 0;
   for (const container of containers.value) {
     if (container.deploymentId !== deployment.id) {
       continue;
     }
-    if (live.ok && container.name === live.value) {
+    if (container.name === live) {
       continue;
     }
     const gone = await platform.containers.remove(container.id);

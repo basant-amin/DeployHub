@@ -142,6 +142,8 @@ describe("attribution against the domain", () => {
     "config.buildContext": "../escape",
     "config.imageRepository": "BAD CAPS",
     "config.buildArgs": "BAD-NAME=1",
+    // A container name may not start with a hyphen — docker refuses it, and so does the codec.
+    "config.containerName": "-not-a-name",
     "config.containerPort": "0",
     "config.runtimeEnvRef": "Bad Ref!",
     "config.route.host": "not a host!",
