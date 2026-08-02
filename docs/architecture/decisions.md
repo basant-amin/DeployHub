@@ -158,6 +158,10 @@ staying open.
 
 ## D8 — Candidate-then-promote, not stop-then-start
 
+> **Superseded by [D12](#d12--classic-replacement-stop-remove-run).** Kept because the reasoning
+> is still correct and is what a future zero-downtime mode would be built from — the decision
+> that changed is which problem the MVP is solving, not whether this one works.
+
 **Decision.** Build and start the new container alongside the live one, health-check
 it in isolation, then switch traffic at the proxy. Keep the previous container
 running through the switch and stop it only during finalization.
@@ -195,8 +199,13 @@ needs to probe the public route after promotion regardless, which Docker cannot 
 
 ## D10 — Two health checks, before and after promotion
 
-**Decision.** Probe the candidate on its internal port before promotion, and probe
-again through the public route after.
+> **Amended by [D12](#d12--classic-replacement-stop-remove-run).** Both checks remain, and both
+> still prove what they proved. What changed is that the first no longer runs in isolation:
+> under classic replacement the container it probes is already serving, so it detects an outage
+> rather than preventing one.
+
+**Decision.** Probe the new container on its published port after starting it, and
+probe again through the public route.
 
 **Why.** They prove different things. The first says the application works; the
 second says the routing works. A correct container behind a proxy pointing at a
@@ -224,3 +233,48 @@ made elsewhere in this document. Retrofitting it means revisiting all of them.
 **Rejected.** Manual recovery via an admin action. Still worth having as an escape
 hatch, and inadequate as the primary mechanism, since the platform is unusable
 until someone performs it.
+
+## D12 — Classic replacement: stop, remove, run
+
+**Decision.** Deploy by stopping the previous container, removing it, and starting the
+new one under the same name and the same published port. One container per project.
+No second container, no traffic switch, and therefore no reverse proxy the platform
+has to drive. Supersedes [D8](#d8--candidate-then-promote-not-stop-then-start).
+
+**Why.** DeployHub replaces a manual SSH deployment on a server that already works:
+
+```
+git pull && docker build && docker stop && docker rm && docker run
+```
+
+Behind that sequence is a host with nginx already pointing at a fixed port. D8's
+candidate needs a _different_ port — the previous container still holds the fixed one
+— so the proxy must be reconfigured on every deployment, which means the platform
+needs an adapter that can rewrite and reload the host's proxy config. That is a
+change to production infrastructure, imposed by a feature the MVP was not asked for.
+Classic replacement removes the requirement entirely: the port never changes, so the
+proxy never changes, and DeployHub can be dropped into a working server without
+touching it.
+
+**The cost, which is real and accepted.** The site is down from the moment the
+previous container stops until the new one answers — seconds normally, longer if the
+new image crashes on boot. Recovery is a cold start under pressure rather than a
+proxy reload. Both were D8's argument against stop-then-start, and both still hold;
+what changed is that a few seconds of downtime per deployment is acceptable to the
+people doing this by hand today, and rebuilding their production server is not.
+
+**What follows.** The promotion boundary moves from the proxy switch to `docker run`,
+so `rolling_back` becomes reachable from `starting` and `health_checking`. Container
+names become stable per project. Rollback restarts the previous image by digest — a
+tag could have been reassigned by the build that just failed. The `ReverseProxy` port
+and its Caddy adapter are deleted, having no caller.
+
+**Rejected.** Keeping D8 and writing an nginx adapter. Fewer lines of code than this
+change, and it puts DeployHub inside `/etc/nginx` on a production server it is
+supposed to leave alone. The risk is in the wrong place.
+
+**Rejected.** A strategy abstraction holding both. There is one strategy. An interface
+with a single implementation is the speculative generality this project's standing
+constraints forbid, and the seam is easier to design correctly with a real second case
+in hand. D8 stays documented so that case starts from a decision rather than a blank
+page.

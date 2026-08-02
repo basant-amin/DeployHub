@@ -17,7 +17,6 @@ decided something would be a policy in the wrong layer.
 | `DeployLock`           | Leased, fenced, single-writer lock                           | `lock/`            | Engine lock step, reconciler  |
 | `GitClient`            | Put the workspace at a ref; return the resolved sha          | `git/`             | Engine update-source step     |
 | `ContainerRuntime`     | Build, start, inspect, rename, stop, remove, prune, headroom | `docker/`          | Engine build → finalize steps |
-| `ReverseProxy`         | Read the current upstream; point a route at one              | `proxy/`           | Engine promote and rollback   |
 | `HealthProbe`          | One probe attempt, one result                                | `health/`          | Health policy                 |
 | `DeploymentLogSink`    | Open with a redactor, append, complete, read, tail           | `logs/`            | Engine runner, log viewer     |
 | `EventPublisher`       | Announce a state or step change                              | `events/`          | Engine runner                 |
@@ -25,7 +24,7 @@ decided something would be a policy in the wrong layer.
 
 ## Two ports carry the platform's future
 
-`ContainerRuntime` and `ReverseProxy` are exactly what a Kubernetes adapter would
+`ContainerRuntime` is exactly what a Kubernetes adapter would
 implement. Keeping them orchestrator-neutral in naming and granularity is the entire
 cost of preserving that option, and it is why neither mentions Docker, a socket, or a
 config file.

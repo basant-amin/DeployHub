@@ -48,7 +48,7 @@ Every port is constructed once, in a composition root that does not exist yet. T
 takes them as one object, so wiring is a single literal:
 
 `Clock` and `IdGenerator` → local. `GitClient` → git over the local command runner.
-`ContainerRuntime` → Docker. `ReverseProxy` → Caddy's admin API. `SecretProvider` → a 0600
+`ContainerRuntime` → Docker. `SecretProvider` → a 0600
 file. `DeploymentLogSink` → append-only file. All three repositories and `DeployLock` →
 SQLite. The worker loop polls `DeploymentRepository.findQueued` and calls
 `DeploymentEngine.run`.

@@ -1,11 +1,13 @@
 # DeployHub
 
-Self-hosted deployment platform for Docker applications.
+Self-hosted deployment for Docker applications: the manual SSH deployment —
+`git pull`, `docker build`, `docker stop`, `docker rm`, `docker run` — behind a web
+interface, so it does not depend on one person with a terminal.
 
-> This repository currently contains the **production-ready project foundation and
-> the deployment architecture design** — tooling, configuration, layering, and
-> quality gates. No deployment, container, auth, or dashboard features are
-> implemented yet.
+It runs on the server it deploys to, drives the host's Docker daemon directly, and
+requires no change to how that server is already set up. The host's reverse proxy
+keeps pointing at a fixed port and is never reconfigured. See
+[Docker](./docs/docker.md) for how DeployHub itself is deployed.
 
 ## Architecture
 
@@ -19,10 +21,14 @@ The internal design of the deployment engine is specified in
 | [Deployment engine](./docs/architecture/deployment-engine.md) | Lifecycle, states, lock, failure handling, recovery          |
 | [Modules](./docs/architecture/modules.md)                     | Per-module purpose, responsibilities, and boundaries         |
 | [Decisions](./docs/architecture/decisions.md)                 | Decisions taken, and the alternatives rejected               |
+| [Docker](./docs/docker.md)                                    | How DeployHub itself is built, run, upgraded, and secured    |
 
-Release 1 targets **one server and one project** (One Community). Kubernetes,
-Swarm, multi-region, and cloud provider APIs are out of scope; the ports they would
-attach to are identified in the overview.
+Release 1 targets **one server and one project** (One Community). Deployment is
+stop-then-run against a fixed port — not zero-downtime, deliberately, so that no
+control over the host's reverse proxy is required
+([D12](./docs/architecture/decisions.md#d12--classic-replacement-stop-remove-run)).
+Kubernetes, Swarm, multi-region, and cloud provider APIs are out of scope; the ports
+they would attach to are identified in the overview.
 
 ## Requirements
 

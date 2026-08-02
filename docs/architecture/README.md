@@ -113,7 +113,6 @@ src/
       local/                        (planned) CommandRunner over child_process
       git/                          (planned) GitClient built on CommandRunner
       docker/                       (planned) ContainerRuntime built on CommandRunner
-      proxy/                        (planned) ReverseProxy built on CommandRunner
       health/                       (planned) HealthProbe over fetch
       logs/                         (planned) LogSink (append-only file + stream)
       lock/                         (planned) DeployLock (DB lease + remote flock)
@@ -133,14 +132,14 @@ src/
 Each future capability attaches at exactly one named seam. This is what "modular
 so those features can be added later" means concretely.
 
-| Future capability                | Attaches at                                                         | Engine change |
-| -------------------------------- | ------------------------------------------------------------------- | ------------- |
-| Multiple servers                 | `CommandRunner` — one instance per host; `ProjectId → host` map     | none          |
-| Kubernetes / Swarm               | new `ContainerRuntime` + `ReverseProxy` adapter                     | none          |
-| Traefik / Caddy instead of nginx | new `ReverseProxy` adapter                                          | none          |
-| Registry-based builds            | new `ContainerRuntime.push/pull`; build step becomes build+push     | one step      |
-| More projects                    | already supported — lock and queue are keyed by `ProjectId`         | none          |
-| GitHub webhook triggers          | new inbound caller of the `RequestDeployment` use case              | none          |
-| Notifications (Slack, email)     | new `EventPublisher` subscriber                                     | none          |
-| Canary / percentage traffic      | `ReverseProxy` gains a weighted-upstream method; new promote policy | one step      |
-| Authentication                   | inbound layer (`app/`, `features/`) — never reaches `core/`         | none          |
+| Future capability            | Attaches at                                                          | Engine change |
+| ---------------------------- | -------------------------------------------------------------------- | ------------- |
+| Multiple servers             | `CommandRunner` — one instance per host; `ProjectId → host` map      | none          |
+| Kubernetes / Swarm           | new `ContainerRuntime` adapter                                       | none          |
+| Zero-downtime / blue-green   | reinstate `ReverseProxy` (D8, superseded by D12); new promote policy | one step      |
+| Registry-based builds        | new `ContainerRuntime.push/pull`; build step becomes build+push      | one step      |
+| More projects                | already supported — lock and queue are keyed by `ProjectId`          | none          |
+| GitHub webhook triggers      | new inbound caller of the `RequestDeployment` use case               | none          |
+| Notifications (Slack, email) | new `EventPublisher` subscriber                                      | none          |
+| Canary / percentage traffic  | zero-downtime first, then a weighted-upstream method on that port    | one step      |
+| Authentication               | inbound layer (`app/`, `features/`) — never reaches `core/`          | none          |

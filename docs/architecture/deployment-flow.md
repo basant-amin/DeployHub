@@ -32,18 +32,19 @@ flowchart TD
     NoOp -->|yes| Skip([succeeded · outcome no_change])
     NoOp -->|no| Build[5 · Build image<br/>tag by sha + deployment id]
     Build -->|fail| Undo
-    Build --> Start[6 · Start candidate container<br/>internal port · no traffic]
-    Start -->|fail| Undo
-    Start --> Health[7 · Health check candidate<br/>N consecutive passes in budget]
-    Health -->|fail| Undo
-    Health --> Promote[8 · Promote<br/>repoint proxy · reload · rename containers]
-    Promote --> Verify[9 · Verify through public route]
-    Verify -->|fail| Rollback[Rollback<br/>repoint proxy to baseline]
-    Verify --> Finalize[10 · Finalize<br/>stop previous · record release · prune]
-    Finalize --> Release[11 · Release lock]
+    Build --> Replace[6 · Replace container<br/>stop · remove · run same name and port]
+    Replace -->|stop fails| Undo
+    Replace -->|start fails| Rollback
+    Replace --> Health[7 · Health check<br/>N consecutive passes in budget]
+    Health -->|fail| Rollback
+    Health --> Verify[8 · Verify through public route]
+    Verify -->|fail| Rollback
+    Verify --> Finalize[9 · Finalize<br/>record release · prune images]
+    Finalize --> Release[10 · Release lock]
     Release --> Done([succeeded])
 
-    Undo[Compensate<br/>remove candidate · live untouched] --> Fail
+    Undo[Compensate<br/>nothing displaced · live untouched] --> Fail
+    Rollback[Rollback<br/>remove failed · run previous digest]
     Rollback -->|ok| RolledBack([rolled_back])
     Rollback -->|fail| Stuck([rollback_failed — human required])
     Fail([failed])
@@ -113,15 +114,19 @@ hold no lock.
 
 ### Phase 3 — Capture the baseline (the rollback contract)
 
-14. **Record what is live, before anything changes it**: running container id and
-    name, image tag **and digest**, deployed commit sha, and the proxy's current
-    upstream target. Persist it on the deployment record.
+14. **Record what is live, before anything changes it**: the container running under
+    the project's name, its id, image tag **and digest**, deployed commit sha, and
+    the address it is published on. Read from the host, not from the record — there
+    is one container per project, so the name identifies it unambiguously. Persist it
+    on the deployment record.
 
-    This is the rollback target. If it cannot be captured, the deployment does not
+    This is the rollback target, and under classic replacement it is the _only_ one:
+    the container itself is removed in phase 6, so the digest is what the previous
+    release can be rebuilt from. If it cannot be captured, the deployment does not
     proceed — a deploy with no known-good state to return to is not acceptable.
 
 15. If there is no live container, mark the deployment `first_deploy`. Its
-    compensation is "remove the candidate"; there is no previous release to return
+    compensation is "remove what was started"; there is no previous release to return
     to, and that is recorded explicitly rather than discovered during a failure.
 
 ### Phase 4 — Update source
@@ -149,74 +154,78 @@ hold no lock.
 22. Enforce the **build timeout**. On failure or timeout, the live container has not
     been touched: delete the dangling image and fail. → **decision point A**.
 
-### Phase 6 — Start the candidate
+### Phase 6 — Replace the container
 
-23. **Start a candidate container** named `<project>-candidate-<deploymentId>` on an
-    allocated internal port, with runtime env injected from the secret provider.
-    Traffic still goes entirely to the live container.
-24. **Confirm it reached `running`** and did not immediately exit or enter a restart
-    loop. On failure: capture its logs onto the deployment record, remove the
-    candidate, fail. → **decision point B**.
+**The step that changes what users see** ([D12](decisions.md#d12--classic-replacement-stop-remove-run)).
+Everything before it is reversible at no cost; nothing after it is.
 
-### Phase 7 — Health check the candidate
+23. **Stop the previous container**, allowing the grace period for a clean shutdown.
+    On failure: nothing has been displaced — it is still running and still serving —
+    so this is an ordinary failure. → **decision point B**.
+24. **Remove it**, freeing the name and the published port. **From here the project
+    has nothing serving**, and every subsequent failure is an outage rather than a
+    non-event. On failure: roll back.
+25. **Run the new container** under the project's name, publishing the same fixed
+    host port, with runtime env injected from the secret provider. The host's proxy
+    is unchanged and unaware — the port it points at has not moved.
+26. **Confirm it reached `running`** and did not immediately exit or enter a restart
+    loop. On failure: capture its logs onto the deployment record and roll back.
+    → **decision point C**.
 
-25. **Probe** the candidate directly on its internal port until it returns the
-    expected status on the health path for **N consecutive attempts** inside the
-    total budget. Between probes, re-assert the container is still running — a
-    container that exits mid-probe fails immediately rather than waiting out the
-    budget.
-26. On failure: **capture the candidate's container logs onto the deployment record**
-    (this is the single most useful artifact for diagnosing a bad release), remove
-    the candidate, fail with `HEALTH_CHECK_FAILED`. → **decision point C**.
+### Phase 7 — Health check
 
-    This is a **discard**, not a rollback. Nothing was ever swapped; the live
-    container served every request throughout. Naming the two cases differently
-    matters, because they have different blast radii and different follow-up.
+27. **Probe** the new container on its published port until it returns the expected
+    status on the health path for **N consecutive attempts** inside the total budget.
+    Between probes, re-assert the container is still running — a container that exits
+    mid-probe fails immediately rather than waiting out the budget.
+28. On failure: **capture its container logs onto the deployment record** (the single
+    most useful artifact for diagnosing a bad release) and roll back with
+    `HEALTH_CHECK_FAILED`.
 
-### Phase 8 — Promote
+    This is a **rollback**, not a discard. The container being probed is already
+    serving traffic, so a failure here is an outage in progress. Under the superseded
+    candidate design this was the cheap case; it is now the expensive one, and the
+    naming reflects that because the two have different blast radii.
 
-The only step that changes what users see.
+### Phase 8 — Verify through the public route
 
-27. **Repoint the reverse proxy** upstream from the live container's port to the
-    candidate's, then reload the proxy — a reload, not a restart, so in-flight
-    connections drain instead of being cut.
-28. **Rename containers** so names reflect reality: candidate → `<project>`, previous
-    → `<project>-previous-<baselineDeploymentId>`.
-29. **Leave the previous container running.** It is not stopped until finalization,
-    so a failed verification is undone by one proxy change.
+29. **Health check again, through the public route** rather than the published port.
+    A distinct check with a distinct purpose: step 27 proved the application works,
+    step 29 proves it is reachable the way a user reaches it — through the host's
+    proxy and its TLS. A correct container behind a broken proxy config is a real and
+    otherwise invisible failure, and this is the only thing that catches it.
+30. On failure: **rollback**. → **decision point D**.
 
-### Phase 9 — Verify through the public route
+### Rollback
 
-30. **Health check again, through the public route** rather than the container port.
-    This is a distinct check with a distinct purpose: step 25 proved the
-    application works, step 30 proves the _routing_ works. A correct container
-    behind a broken proxy config is a real and otherwise invisible failure.
-31. On failure: **rollback**. Repoint the proxy at the baseline container (still
-    running), reload, restore container names, verify the baseline responds, and
-    end in `rolled_back`. → **decision point D**.
+31. **Remove the failed container**, freeing the name and port. Then **run the
+    baseline image by digest** under the same name, and end in `rolled_back`. The
+    digest, not the tag: the build that just failed may have reassigned the tag.
 32. If the rollback itself fails, end in `rollback_failed`: keep the lock held,
     persist everything known about both containers, and raise the loudest
     notification available. This state exists to be impossible to ignore — it is
     the only outcome that leaves the platform requiring a human.
 
-### Phase 10 — Finalize
+### Phase 9 — Finalize
 
 Past this point the deployment has succeeded; nothing here can un-succeed it.
 Failures are recorded as warnings, not converted into rollbacks.
 
-33. **Stop** the previous container — stop, not remove. A stopped container with
-    its image intact makes a manual rollback near-instant.
-34. **Persist the release**: commit sha, image digest, container id, actor,
+The previous container is **not** stopped here — phase 6 already stopped and removed
+it, because its name and port were needed. What makes a manual rollback near-instant
+is its image, which retention protects.
+
+33. **Persist the release**: commit sha, image digest, container id, actor,
     per-step durations, total duration.
-35. **Prune** images and stopped containers beyond the retention count, oldest
-    first, never touching the live one or the immediate previous one.
-36. **Flush** the log stream and mark the log artifact complete.
+34. **Prune** images beyond the retention count, oldest first, never touching the
+    live one or the immediate previous one.
+35. **Flush** the log stream and mark the log artifact complete.
 
-### Phase 11 — Release
+### Phase 10 — Release
 
-37. **Release the lock** using the fencing token and stop the heartbeat. Releasing
+36. **Release the lock** using the fencing token and stop the heartbeat. Releasing
     is unconditional — it runs on every terminal path except `rollback_failed`.
-38. **State → `succeeded`**, emit `deployment.succeeded`.
+37. **State → `succeeded`**, emit `deployment.succeeded`.
 
 ## Step properties
 

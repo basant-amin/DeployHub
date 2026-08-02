@@ -23,7 +23,6 @@ architecture, and they are only catchable if they were written down first.
 | `server/adapters/ssh`, `local` | infrastructure | How commands reach a host                    |
 | `server/adapters/git`          | infrastructure | Git CLI surface                              |
 | `server/adapters/docker`       | infrastructure | Docker CLI surface                           |
-| `server/adapters/proxy`        | infrastructure | Reverse proxy product or config layout       |
 | `server/adapters/health`       | infrastructure | How an HTTP probe is issued                  |
 | `server/adapters/logs`         | infrastructure | Where log lines are stored and streamed      |
 | `server/adapters/lock`         | infrastructure | How the lease is persisted                   |
@@ -98,9 +97,8 @@ persisted.
 engine's language rather than a vendor's.
 
 **Responsibilities.** `GitClient` (put the workspace at a ref, return the resolved
-sha). `ContainerRuntime` (build, start, inspect, rename, stop, remove, list by
-label, remove images, report storage headroom). `ReverseProxy` (read current
-upstream, point route at target). `HealthProbe` (one attempt, one result).
+sha). `ContainerRuntime` (build, start, inspect, stop, remove, list by label,
+remove images, report storage headroom). `HealthProbe` (one attempt, one result).
 `DeployLock` (acquire, heartbeat, release, find expired — all fenced).
 `DeploymentLogSink` (open with a redactor, append, complete, read, tail).
 `EventPublisher`. `ProjectRepository`, `DeploymentRepository`,
@@ -124,10 +122,10 @@ Leak vendor concepts into their signatures: no `DockerContainerInspectOutput` in
 port type, or the abstraction has bought nothing. Be implemented inside `core/`
 (other than test fakes).
 
-Two ports carry the future of the platform: `ContainerRuntime` and `ReverseProxy`
-are exactly what a Kubernetes adapter would implement. Keeping them
-container-orchestrator-neutral in _naming_ and _granularity_ is the whole cost of
-that option, and it is worth paying now.
+One port carries the future of the platform: `ContainerRuntime` is exactly what a
+Kubernetes adapter would implement. Keeping it container-orchestrator-neutral in
+_naming_ and _granularity_ is the whole cost of that option, and it is worth paying
+now.
 
 ## `core/application/engine` — the deployment engine
 
@@ -238,22 +236,16 @@ remove the live container on its own initiative — destructive operations are a
 explicitly targeted by the caller. Assume it is the only container runtime that
 will ever exist.
 
-## `server/adapters/proxy` — traffic switching
+## `server/adapters/proxy` — removed (D12)
 
-**Purpose.** Implement `ReverseProxy`: make a public route point at a chosen
-container.
+There is no proxy adapter. Under classic replacement the container publishes on a
+fixed port, so the host's reverse proxy holds one static upstream and is never
+reconfigured by the platform — which is the property that lets DeployHub be
+installed on a working server without changing it.
 
-**Responsibilities.** Read the current upstream for a route (needed for both
-baseline capture and reconciliation). Render the upstream config from a template.
-Validate the config before applying it (`nginx -t` or the equivalent) — an invalid
-config must fail before a reload, not during. Reload without dropping in-flight
-connections. Report the applied target back.
-
-**Owns.** Proxy config file layout, templates, and the reload command.
-
-**Must never.** Restart the proxy when a reload would do. Apply a config it has not
-validated. Decide when to switch. Hold routing state in memory as the source of
-truth — the running proxy is authoritative and must be readable.
+The module returns if zero-downtime deployment does. Its contract is written in
+[D8](decisions.md#d8--candidate-then-promote-not-stop-then-start) and the deleted
+`ReverseProxy` port is in git history.
 
 ## `server/adapters/health` — probes
 

@@ -8,7 +8,7 @@ milestone completes, the [Session Notes](#session-notes) section gains an entry 
 it are corrected. If something here contradicts the code, **the code is right and this file is stale** —
 fix it.
 
-Last updated: **2026-07-30** · Last commit: `49d6908` · Branch: `phase-3-deploy-architecture`
+Last updated: **2026-08-02** · Branch: `classic-deployment-strategy`
 
 ---
 
@@ -24,6 +24,11 @@ it is built to the standard we would want from a tool we depend on during an inc
 
 ### Main goals
 
+- **Replace manual SSH deployment** — this is the MVP, and the whole of it. A developer opens
+  DeployHub, picks a branch, presses Deploy, and the platform runs the exact sequence an engineer
+  runs by hand today. No SSH, no terminal, no Linux knowledge, and no dependence on one person.
+- **Adapt to the server, not the other way round** — production already works, and DeployHub
+  installs onto it without changing how anything is hosted.
 - **Deploy directly from GitHub** — a repository URL and a ref are the whole input.
 - **Docker-based deployments** — the unit of deployment is an image built from the repo's Dockerfile.
 - **Simple UI for developers** — one screen answers "is production okay?", one button ships.
@@ -85,7 +90,7 @@ which is what lets persistence store JSON and still hand back a valid aggregate.
 ### Shared kernel (`src/core/shared`) — frozen
 
 `Result<T, E>` instead of thrown control flow; the domain never throws for a failure it anticipated. A
-closed catalogue of **67 error codes**, each with exactly one producer. Branded value objects for every
+closed catalogue of **65 error codes**, each with exactly one producer. Branded value objects for every
 identifier, timestamp, duration, git ref, image reference, route, and path, so passing a `DeploymentId`
 where a `ProjectId` belongs is a compile error.
 
@@ -96,9 +101,9 @@ matching linear on a 40k-character line.
 
 ### Ports (`src/core/ports`) — frozen
 
-13 interfaces: `Clock`, `IdGenerator`, `ProjectRepository`, `DeploymentRepository`,
+12 interfaces: `Clock`, `IdGenerator`, `ProjectRepository`, `DeploymentRepository`,
 `ReleaseRepository`, `DeployLock`, `GitClient`, `ContainerRuntime`, `ReverseProxy`, `HealthProbe`,
-`DeploymentLogSink`, `EventPublisher`, `SecretProvider`. None mentions Docker, SSH, Caddy, SQLite, or
+`DeploymentLogSink`, `EventPublisher`, `SecretProvider`. None mentions Docker, SSH, SQLite, or
 Next.
 
 Two deliberate omissions, both recorded in `docs/architecture/modules.md`:
@@ -111,18 +116,22 @@ Two deliberate omissions, both recorded in `docs/architecture/modules.md`:
 
 ### Application layer (`src/core/application`)
 
-**Deployment Engine** (`engine/deployment-engine.ts`, ~825 lines) is written as a straight line in the
-order of the flow document: validate → preflight → acquire lease → capture baseline → fetch → build →
-start candidate → health check → promote → verify public route → finalize.
+**Deployment Engine** (`engine/deployment-engine.ts`) is written as a straight line in the order of
+the flow document: validate → preflight → acquire lease → capture baseline → fetch → build → stop
+→ remove → run → health check → verify public route → finalize.
 
 `run(queued)` enters `validating` before anything else, because `fail()` is illegal from `queued` and a
 preflight failure has to be reportable.
 
-**Zero downtime** comes from candidate-then-promote (D8): the old container keeps serving until the new
-one has passed its own health check _and_ the route switch has been verified. Two compensations, chosen
-by how far the deployment got — before promotion the candidate is discarded; after promotion the
-baseline is redeployed, which is an ordinary deployment of an older sha rather than a second code path
-nobody exercises until an incident.
+**Classic replacement** (D12): stop the previous container, remove it, start the new one under the
+same name and the same published port. Two compensations, chosen by how far the deployment got —
+before the previous container is displaced a failure is an ordinary `failed`; after it, the only
+honest answer is a rollback, which restarts the previous image **by digest**.
+
+There is **no zero downtime**, deliberately. The site is down from `docker stop` until the
+replacement answers. That was the cost of not requiring control over the host's reverse proxy, and
+it was accepted knowingly — D8 records the design that traded the other way, for when a project
+needs it.
 
 **Use cases:** `RequestDeployment` (admission — refuses a busy project rather than queueing, per D6),
 `RequestRollback`, `GetDeploymentHistory`, `GetDeploymentDetail`.
@@ -132,17 +141,14 @@ the pipeline.
 
 ### Infrastructure (`src/server/adapters`)
 
-Every external command was verified against a real Docker daemon (29.1.2), a real Caddy (2.11.4), and
-real git (2.46.1) **before** the adapter was written. `docs/ops/host-spike.md` records the exact forms.
+Every external command was verified against a real Docker daemon (29.1.2) and real git (2.46.1)
+**before** the adapter was written. `docs/ops/host-spike.md` records the exact forms.
 
 - **Docker runtime** — structured state is read only via `docker inspect --format '{{json .}}'`; `ps`
   output is never parsed. A locally built image has no `RepoDigests`, so the recorded digest is the
-  image `.Id`. Candidates publish on `-p 127.0.0.1::<port>`, so a candidate is unreachable from
-  outside until the proxy is pointed at it. Containers are named `<slug>-<deploymentId>` for life —
-  renaming was dropped because it cannot be made collision-free.
-- **Caddy** — driven entirely through the admin API using `@id` addressing. No config templating, no
-  reload. `fetch` sends an empty `Origin` where curl sends none, which Caddy rejects with 403, so the
-  adapter sends `Origin: <adminUrl>`.
+  image `.Id`. Containers publish on `-p <bindHost>:<port>:<port>` — a **fixed** port, which is what
+  lets the host's proxy hold one static upstream. One container per project, named `<slug>`, so
+  `docker stop one-community` still means what an operator expects.
 - **Git** — `CommandGitClient` over the shared `LocalCommandRunner`; credentials arrive via env, never
   argv.
 - **SQLite** (`node:sqlite`) — a JSON snapshot plus extracted indexed columns, rehydrated through
@@ -157,7 +163,7 @@ real git (2.46.1) **before** the adapter was written. `docs/ops/host-spike.md` r
 ### Runtime (`src/server/runtime`)
 
 `composition.ts` is the **only** place a concrete adapter is named — swapping SQLite for Postgres or
-Caddy for Traefik is an edit to that one file. `platform.ts` caches the wired platform per process
+Docker for another runtime is an edit to that one file. `platform.ts` caches the wired platform per process
 behind a `Symbol.for` key so Next's module reloading cannot produce two databases.
 
 `boot-sweep.ts` recovers what a dead worker left behind. It must run **first** in a process's
@@ -170,11 +176,9 @@ cleaned it up.
 own process rather than inside the web server, because a deployment takes minutes and must outlive the
 request that triggered it.
 
-> ⚠️ **Known gap.** The only construction of `Worker` in the repository is inside
-> `scripts/deployhub.ts`, with `maxDeployments: 1` — it runs one deployment and exits. **There is no
-> long-running worker entrypoint and no service unit.** This is a blocker for operating the platform:
-> the dashboard's Deploy button queues a deployment that nothing will pick up. See
-> [Next Development Plan](#next-development-plan).
+`scripts/worker.ts` is the long-running entrypoint, run as its own container from the same image
+(`npm run worker` locally). It finishes the deployment in flight on SIGTERM, which is why the
+worker container is started with `--stop-timeout 1800`.
 
 ### Dashboard (`src/app`, `src/features`, `src/components`)
 
@@ -264,26 +268,26 @@ automatic rollback, and the dashboard covers every screen needed to operate it.
 
 ### Completed
 
-| Area                                                                         | State                         |
-| ---------------------------------------------------------------------------- | ----------------------------- |
-| Core domain (aggregates, 16-state machine, invariants)                       | ✅ frozen                     |
-| Shared kernel (Result, 67 error codes, value objects, redaction)             | ✅ frozen                     |
-| Ports (13 interfaces)                                                        | ✅ frozen                     |
-| Deployment engine (candidate-then-promote, both compensations)               | ✅                            |
-| Infrastructure adapters (Docker, git, Caddy, SQLite, secrets, lock, logs)    | ✅                            |
-| SQLite persistence (snapshot + indexed columns, invariant 1 as a constraint) | ✅                            |
-| Worker (one-at-a-time loop, boot sweep)                                      | ⚠️ no long-running entrypoint |
-| Dashboard — production, history, detail                                      | ✅                            |
-| Authentication (shared password, fails closed)                               | ✅                            |
-| Project registration and settings                                            | ✅                            |
-| Live deployment updates (adaptive polling)                                   | ✅                            |
-| Deploy and rollback from the UI, with optimistic state                       | ✅                            |
-| Keyboard shortcuts and ⌘K command palette                                    | ✅                            |
-| Accessibility (contrast floor, landmarks, labels, skip link, `aria-current`) | ✅                            |
-| Light theme (cookie-backed, no flash)                                        | ✅                            |
-| Diagnostics (copy as text)                                                   | ✅                            |
-| Raw logs (sheet + copy)                                                      | ✅                            |
-| Tests                                                                        | ✅                            |
+| Area                                                                         | State     |
+| ---------------------------------------------------------------------------- | --------- |
+| Core domain (aggregates, 16-state machine, invariants)                       | ✅ frozen |
+| Shared kernel (Result, 65 error codes, value objects, redaction)             | ✅ frozen |
+| Ports (12 interfaces)                                                        | ✅ frozen |
+| Deployment engine (classic replacement, both compensations)                  | ✅        |
+| Infrastructure adapters (Docker, git, SQLite, secrets, lock, logs)           | ✅        |
+| SQLite persistence (snapshot + indexed columns, invariant 1 as a constraint) | ✅        |
+| Worker (one-at-a-time loop, boot sweep, long-running entrypoint)             | ✅        |
+| Dashboard — production, history, detail                                      | ✅        |
+| Authentication (shared password, fails closed)                               | ✅        |
+| Project registration and settings                                            | ✅        |
+| Live deployment updates (adaptive polling)                                   | ✅        |
+| Deploy and rollback from the UI, with optimistic state                       | ✅        |
+| Keyboard shortcuts and ⌘K command palette                                    | ✅        |
+| Accessibility (contrast floor, landmarks, labels, skip link, `aria-current`) | ✅        |
+| Light theme (cookie-backed, no flash)                                        | ✅        |
+| Diagnostics (copy as text)                                                   | ✅        |
+| Raw logs (sheet + copy)                                                      | ✅        |
+| Tests                                                                        | ✅        |
 
 ### Test count
 
@@ -305,7 +309,8 @@ pass. Commit `49d6908`.
 
 ### Proven by real execution (macOS host)
 
-Real clone from GitHub, real `docker build`, real containers, real Caddy switches, real HTTP probes:
+Under the superseded candidate-then-promote design. Real clone from GitHub, real `docker build`,
+real containers, real Caddy switches, real HTTP probes:
 
 - A successful deployment triggered from the browser: **4.8s**, both trust checks green.
 - **Zero downtime measured** across a promotion: 117 requests during the switch, **all HTTP 200**
@@ -344,8 +349,9 @@ platform that has never run on its target OS would mean debugging two unknowns a
 3. **Docker socket permissions** — the DeployHub process needs to reach `/var/run/docker.sock`. That
    means a group membership decision, and it is a privilege boundary worth thinking about rather than
    solving with `sudo`.
-4. **Caddy admin API reachability** — the adapter assumes `http://localhost:2019`, which is Caddy's
-   default and should be kept bound to loopback.
+4. **Cloudflare in the verification path** — the post-deployment check probes the public route, so
+   a Cloudflare 403 against `User-Agent: DeployHub/health-check` would roll back a deployment that
+   actually worked. Allowlist it, or point `DEPLOYHUB_PUBLIC_*` at the origin.
 
 ---
 
@@ -394,8 +400,8 @@ arbitrary and skipping ahead is how a box ends up exposed.
 5. **Disable password authentication** — _only after confirming key login works in a second, separate
    session._ Locking yourself out of a fresh VPS is the classic way to lose an afternoon.
 6. **Secure the SSH configuration** — no root login, no password auth, key types explicit.
-7. **Configure the firewall** — default deny inbound; allow SSH, 80, and 443. **Do not expose 2019
-   (Caddy admin) or the dashboard port.**
+7. **Configure the firewall** — default deny inbound; allow SSH, 80, and 443. **Do not expose the
+   dashboard port.**
 8. **Install Git.**
 9. **Install Docker** — from Docker's own apt repository, not the distro package.
 10. **Install Docker Compose** if required. _(DeployHub itself does not use it; the applications being
@@ -418,20 +424,18 @@ arbitrary and skipping ahead is how a box ends up exposed.
     measured on macOS.
 17. **Validate Rollback** — including the automatic path, by deliberately failing a health check.
 18. **Validate Logs** — captured per step, complete, and with secrets redacted.
-19. **Validate Worker** — **this requires building the long-running worker entrypoint first.**
-    Concretely: an entrypoint that constructs the platform and runs `Worker` with no `maxDeployments`, a
-    `worker` npm script, and a systemd unit with `Restart=always`. Then verify that the boot sweep
-    recovers correctly when the service is killed mid-deployment.
+19. **Validate Worker** — verify the boot sweep recovers correctly when the worker container is
+    killed mid-deployment, and that `--stop-timeout 1800` lets an ordinary stop drain instead.
 20. **Deploy One Community Staging** as the first real application.
 
 ### Engineering work implied by the above
 
-These are code changes, not server steps, and they block step 19 and step 20:
-
-- **Long-running worker entrypoint + systemd unit** (blocks 19 and 20).
-- **`df -Pk` parsing confirmed or corrected** (blocks 16).
+- ~~Long-running worker entrypoint~~ — done: `scripts/worker.ts`, run as its own container.
+  No systemd unit; `--restart unless-stopped` is the supervisor.
+- ~~`df -Pk` parsing~~ — confirmed inside the runtime image, which is Debian and therefore GNU
+  coreutils. Columns 2 and 4 are total and available, as the adapter assumes.
 - A **deployment guide** in `docs/ops/` recording what was actually done to this server, so the next
-  server does not require rediscovery.
+  server does not require rediscovery. `docs/docker.md` covers the container side.
 
 ---
 
@@ -471,8 +475,10 @@ their alternatives and consequences in `docs/architecture/decisions.md`.
   plus indexed columns. The seam for changing it is `composition.ts` and nothing else.
 - **Docker is the deployment runtime.** Structured state comes from `docker inspect`; `ps` output is
   never parsed.
-- **Caddy is the reverse proxy**, driven through its admin API with `@id` addressing. No config
-  templating, no reload.
+- **DeployHub does not touch the host's reverse proxy.** Deployed containers publish on a fixed
+  port, so the proxy's upstream never moves. This is D12, and it is the decision that lets the
+  platform be installed on a working server without redesigning it. The Caddy adapter that the
+  superseded candidate-then-promote design required has been deleted.
 - **GitHub is the deployment source.**
 - **Keep the architecture modular.** The inward dependency rule is the point: `core` must stay free of
   I/O, frameworks, and Node APIs, and only `composition.ts` may name an adapter.
@@ -524,11 +530,9 @@ directly. Defaults in parentheses.
 | `DEPLOYHUB_DATABASE`      | SQLite file (`<root>/deployhub.db`)                             |
 | `DEPLOYHUB_WORKSPACES`    | One git workspace per project (`<root>/projects`)               |
 | `DEPLOYHUB_SECRETS`       | Secrets JSON, **mode 0600** (`<root>/secrets.json`)             |
-| `DEPLOYHUB_CADDY_ADMIN`   | Caddy admin endpoint (`http://localhost:2019`)                  |
-| `DEPLOYHUB_CADDY_SERVER`  | Server key inside `apps.http.servers` (`main`)                  |
-| `DEPLOYHUB_BIND_HOST`     | Address candidates publish on (`127.0.0.1`)                     |
+| `DEPLOYHUB_BIND_HOST`     | Interface deployed containers publish on (`127.0.0.1`)          |
 | `DEPLOYHUB_PUBLIC_SCHEME` | `http` or `https` (`https`)                                     |
-| `DEPLOYHUB_PUBLIC_PORT`   | Public port Caddy serves (`443`)                                |
+| `DEPLOYHUB_PUBLIC_PORT`   | Public port the host's proxy serves (`443`)                     |
 | `DEPLOYHUB_STORAGE_PATH`  | Filesystem preflight checks for free space (`/var/lib/docker`)  |
 | `DEPLOYHUB_LEASE_TTL_MS`  | How long a deploy lease survives without a heartbeat (`60000`)  |
 | `DEPLOYHUB_PASSWORD`      | Dashboard shared password, ≥8 chars. **Unset ⇒ fails closed.**  |
@@ -551,6 +555,60 @@ directly. Defaults in parentheses.
 
 Newest first. Each entry: date, what was completed, what remains, blockers, and the next immediate
 task. **Add an entry after every significant milestone.**
+
+### 2026-08-02 — Classic Deployment Strategy; DeployHub containerized
+
+**Completed.** Two things, in order.
+
+_Containerization._ `Dockerfile` and `.dockerignore`, four stages, only the runner ships.
+`output: "standalone"` halved the image (1.15 GB → 657 MB). Docker CLI + buildx copied from the
+official image; Debian rather than Alpine so `df -Pk` matches the Ubuntu host. `docs/docker.md` is
+the operational contract.
+
+_The pivot._ A review of the MVP established that the objective is **replacing manual SSH
+deployment**, not zero-downtime orchestration. Candidate-then-promote (D8) required a reverse proxy
+the platform could reconfigure on every deployment, which meant DeployHub writing into
+`/etc/nginx` on a production server it is supposed to leave alone. [D12](../architecture/decisions.md)
+replaces it with stop → remove → run on a fixed port, and the requirement disappears.
+
+Seven increments, gate green after each:
+
+1. **Domain** — `rolling_back` reachable from `starting` and `health_checking`. Two entries in the
+   transition table; the promotion boundary is now `docker run`.
+2. **Engine** — replace instead of promote. `projectContainerName`, host-read baseline, rollback by
+   digest, `ContainerRuntime.rename` deleted. Engine test suite rewritten.
+3. **Proxy removal** — `ReverseProxy` port, Caddy adapter, two error codes, `DEPLOYHUB_CADDY_*`.
+4. **Docker adapter** — fixed `-p <bindHost>:<port>:<port>`; reachable address read back from the
+   daemon, with `0.0.0.0` normalised to loopback for probing.
+5. **UI** — the impact boundary moved from `promoting` to `starting` in two places that would
+   otherwise have told a reader production was fine while it was down.
+6. **Worker** — `scripts/worker.ts`, shipped in the image and run as a second container. The alias
+   hook no longer depends on `process.cwd()`.
+7. **Documentation** — D12, the flow document, module docs, `docs/docker.md`, this file.
+
+**426 tests, all passing.** Error catalogue 67 → 65.
+
+**Verified on macOS/Docker Desktop.** Image builds; both containers run as uid 1000; the worker
+loops and runs the boot sweep; `docker version`, `docker run hello-world`, and a real `docker build`
+through buildx all work from inside the container; SQLite + WAL + SHM survive restart, container
+replacement, and image rebuild. The real `DockerContainerRuntime` was driven through the full
+classic sequence against the host daemon: build, start on a fixed port, **duplicate name refused**,
+stop → remove → start reusing the same name and port.
+
+**Remaining.** Linux validation on the VPS, then OneCommunity staging.
+
+**Blockers.**
+
+- 🟡 **No end-to-end deployment has run.** Every stage is proven except a real git-driven deployment,
+  which needs a reachable repository and belongs on the VPS.
+- 🟡 **`--group-add $(getent group docker)` is unproven on Ubuntu.** Docker Desktop presents the
+  socket as `root:root`, so verification used `--group-add 0`. One `docker run` on the VPS settles it.
+- 🟡 **Cloudflare can fail a good deployment.** The public-route check would read a 403 as a failed
+  verification and roll back a working release. Allowlist the health-check User-Agent first.
+
+**Next immediate task.** Provision the VPS and run the deployment steps in `docs/docker.md`.
+
+---
 
 ### 2026-07-30 — Internal project state document created
 

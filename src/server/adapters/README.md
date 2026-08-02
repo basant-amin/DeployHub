@@ -9,7 +9,6 @@ no decision-making: adapters do what they are told and report what happened.
 | `local/`       | `CommandRunner`    | `child_process` — development and tests.          |
 | `git/`         | `GitClient`        | Built on `CommandRunner`.                         |
 | `docker/`      | `ContainerRuntime` | Built on `CommandRunner`. Owns naming + labels.   |
-| `proxy/`       | `ReverseProxy`     | Validates config before reloading.                |
 | `health/`      | `HealthProbe`      | One probe, one result. No loops, no thresholds.   |
 | `logs/`        | `LogSink`          | Append-only; redaction at the boundary.           |
 | `lock/`        | `DeployLock`       | Persisted lease + fencing epoch + remote `flock`. |

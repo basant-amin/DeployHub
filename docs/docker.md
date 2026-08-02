@@ -13,80 +13,72 @@ networking**, and the reason is worth reading before the first deployment.
 
 ## Container architecture
 
-DeployHub is a host agent that happens to have a web interface. It does not merely run _next to_
-Docker; it drives the host's Docker Engine, reads the host's disk, and probes ports the host's
-daemon allocated. Containerizing it therefore means deciding how much of the host it can still see.
+DeployHub is a host agent that happens to have a web interface. It drives the host's Docker
+Engine, reads the host's disk, and probes ports the host's daemon published. Containerizing it
+means deciding how much of the host it can still see.
 
-Three couplings force the answer.
+**One image, two containers.** `deployhub-web` serves the dashboard; `deployhub-worker` runs
+deployments. They are separate processes because a deployment takes minutes and must outlive the
+request that triggered it ([D7](architecture/decisions.md#d7--the-engine-runs-in-a-long-lived-worker-not-a-request-handler)),
+and separate containers rather than a supervised pair because `--restart unless-stopped` can then
+restart either without touching the other. They share the data mount and the Docker socket, and
+coordinate through SQLite in WAL mode — one writer, several readers.
 
-**The candidate health check.** The engine publishes each candidate container on
-`--publish 127.0.0.1::<containerPort>`, letting the host daemon allocate a free port, then probes it
-at `http://127.0.0.1:<allocatedPort>` (`src/server/adapters/health/health-probe.ts`). The address is
-the host's loopback. Inside a bridge-networked container, `127.0.0.1` is the container's own
-loopback, so that probe would find nothing — and because health-before-promotion is invariant 4,
-**every deployment would fail at the health check** rather than degrade quietly.
-
-**The Caddy admin API.** The reverse-proxy adapter drives `http://localhost:2019`, which is
-deliberately bound to loopback so the most dangerous endpoint on the box is not routable. Reaching
-it from a bridge network would mean rebinding it to the docker0 gateway — widening exposure of the
-one endpoint that can repoint production traffic.
-
-**The public-route verification.** After promotion the engine re-probes the deployment through its
-real public URL. That check is only meaningful if it traverses the same path an external client
-would.
-
-All three are satisfied, with no application change whatsoever, by running with
-**`--network host`**. The container shares the host's network namespace, so `127.0.0.1` means the
-host, `localhost:2019` reaches Caddy, and the public probe leaves and re-enters the box exactly as a
-browser's request does. Every default in `runtimeConfigFromEnv()`
-(`src/server/runtime/composition.ts`) is then correct as written.
-
-The cost is that the container gets no network isolation. That cost is close to zero here, because
-the same container is handed the Docker socket — see [Security notes](#security-notes). Network
-isolation on top of socket access is a lock on a door in a wall that is not there.
+**Ordinary bridge networking is enough.** That is a consequence of
+[D12](architecture/decisions.md#d12--classic-replacement-stop-remove-run): every deployed container
+publishes on a **fixed** host port and the host's proxy is never reconfigured, so nothing inside
+DeployHub needs to address the host's loopback as if it were its own. The health probe targets the
+published port, which the daemon binds on the host, and the worker reaches it the same way any
+other client would.
 
 ```
+Cloudflare
+    │
+    ▼
 Linux host ────────────────────────────────────────────────────────────
-  nginx :80/:443 ──► 127.0.0.1:3000  (DeployHub dashboard)
-                                │
-  ┌─────────────────────────────┴──────────────────────────────┐
-  │ container: deployhub   --network host   USER node (1000)   │
-  │                                                            │
-  │   node server.js  ── Next standalone, binds 127.0.0.1:3000 │
-  │   docker CLI + buildx ──────────┐                          │
-  │   git ──────────────┐           │                          │
-  └─────────────────────┼───────────┼──────────────────────────┘
-        bind mounts     │           │  /var/run/docker.sock
-                        ▼           ▼
-        /var/lib/deployhub    Docker Engine (host)
-          deployhub.db          builds images
-          deployhub.db-wal      runs app containers on 127.0.0.1:<alloc>
-          deployhub.db-shm            │
-          projects/<slug>/repo        ▼
-          secrets.json          Caddy :2019 admin ──► public route :443
+  nginx :443 ──► 127.0.0.1:3000   OneCommunity container   (unchanged)
+             └─► 127.0.0.1:8080   DeployHub dashboard
+                        │
+  ┌─────────────────────┴───────────┐   ┌──────────────────────────────┐
+  │ deployhub-web       USER node   │   │ deployhub-worker  USER node  │
+  │  node server.js  :3000          │   │  node worker.ts              │
+  │  (published to 127.0.0.1:8080)  │   │  docker CLI + buildx, git    │
+  └─────────────┬───────────────────┘   └──────┬───────────────┬───────┘
+                │  /var/lib/deployhub          │               │
+                └──────────────┬───────────────┘               │
+                               ▼                     /var/run/docker.sock
+                     deployhub.db (WAL)                        │
+                     projects/<slug>/repo                      ▼
+                     secrets.json                    Docker Engine (host)
+                                                       builds images
+                                                       stop → rm → run
+                                                       one container per project
 ```
 
-The container runs no daemon. It holds a Docker _client_ that asks the host's daemon to do things.
-Images built during a deployment are the host's images; containers started are the host's
-containers. Nothing DeployHub creates lives inside DeployHub's own container, which is what makes
-the container disposable.
+The containers run no daemon. They hold a Docker _client_ that asks the host's daemon to do
+things. Images built during a deployment are the host's images; containers started are the host's
+containers, published on their fixed ports exactly as a manual `docker run` would leave them.
+Nothing DeployHub creates lives inside DeployHub's own containers, which is what makes them
+disposable.
+
+**Why nginx never has to change.** A deployment stops `one-community`, removes it, and starts a
+new `one-community` publishing `3000:3000` again. From nginx's point of view nothing happened —
+its `proxy_pass http://127.0.0.1:3000` was correct before and is correct after. DeployHub does not
+read, write, or reload the host's proxy configuration, and has no adapter that could.
 
 ### Path identity
 
-A container that drives the host's daemon has to be careful about which side resolves a path. Two
-cases, both already safe:
+A container driving the host's daemon must be careful about which side resolves a path. Two cases,
+both safe:
 
-- **Build contexts** are read by the _client_ and streamed to the daemon, so `docker build` run from
-  `/var/lib/deployhub/projects/<slug>/repo` resolves that path inside the container. Correct.
+- **Build contexts** are read by the _client_ and streamed to the daemon, so `docker build` run
+  from `/var/lib/deployhub/projects/<slug>/repo` resolves that path inside the container.
 - **App containers** are started with `--publish` and `--env` only. The adapter never passes `-v`,
-  so no path is ever handed to the daemon to resolve on the host side.
+  so no path is handed to the daemon to resolve on the host side.
 
 Mounting the data root at the **same path inside the container as on the host**
-(`/var/lib/deployhub:/var/lib/deployhub`) keeps that property true if a future change ever does pass
-a path to the daemon. It costs nothing and removes a whole class of confusing failure, so the run
-command below does it deliberately rather than mapping to a different container path.
-
----
+(`/var/lib/deployhub:/var/lib/deployhub`) keeps that true if a future change ever does pass a path
+to the daemon. It costs nothing and removes a class of confusing failure.
 
 ## Image layout
 
@@ -99,10 +91,15 @@ Four stages; only the last one ships.
 | `builder`    | `node:24.18.1-bookworm-slim` | `npm run build`, including the type check            |
 | `runner`     | `node:24.18.1-bookworm-slim` | What ships                                           |
 
-The runtime image contains: the Node 24 runtime, the traced application (`server.js` plus the
-modules Next's file tracing proved reachable), `git`, `ca-certificates`, the Docker CLI, and the
-buildx plugin. It contains no npm install, no `next` binary, no TypeScript, no test runner, no
-source tree, and no Docker daemon.
+The runtime image contains: the Node 24 runtime, the traced dashboard (`server.js` plus the modules
+Next's file tracing proved reachable) at `/app`, the worker's TypeScript sources at
+`/opt/deployhub`, `git`, `ca-certificates`, the Docker CLI, and the buildx plugin. It contains no
+npm install, no `next` binary, no test runner, no compiler, and no Docker daemon.
+
+The worker's sources are the one thing in the image that is not compiled output. It runs them
+directly under Node's type stripping — the same mechanism `npm run deployhub` uses — because the
+alternative was a second build step whose output would be a third copy of the code to keep in step.
+They live outside `/app` so they cannot collide with the sources Next's tracing places there.
 
 **Why Node 24 specifically.** Persistence uses `node:sqlite`, the runtime's built-in driver
 (`src/server/adapters/persistence/database.ts`). That is why this project has no native module to
@@ -127,13 +124,13 @@ host, same base image, same tooling:
 | Runtime model                            | Image size |
 | ---------------------------------------- | ---------- |
 | `next start` + production `node_modules` | 1.15 GB    |
-| `node server.js` (standalone)            | **655 MB** |
+| `node server.js` (standalone)            | **657 MB** |
 
 `next start` requires the `next` package at runtime, which carries the SWC native binaries; the
 image would ship a CLI in order to call one function. Standalone emits a traced module graph and a
 `server.js`, so the runtime stage performs no install at all. The application payload is 22 MB of
-the 655 MB — the remainder is the Node runtime, git, and the Docker tooling, all of which are
-irreducible given what DeployHub does.
+the 657 MB, plus 2 MB of worker sources — the remainder is the Node runtime, git, and the Docker
+tooling, all of which are irreducible given what DeployHub does.
 
 **Why buildx is included.** `docker build` has routed through BuildKit via the buildx CLI plugin
 since Docker 23. Without the plugin the engine's build step fails outright with _"the buildx
@@ -171,50 +168,77 @@ entirely through the environment at `docker run`.
 
 ## Run command
 
-The host must first have the data root and the secrets file in place, owned by uid 1000 (the `node`
-user inside the image) — see [Persistent storage](#persistent-storage).
+Two containers from one image. The host must already have the data root and the secrets file in
+place, owned by uid 1000 — see [Persistent storage](#persistent-storage).
+
+### The dashboard
 
 ```bash
 docker run --detach \
-  --name deployhub \
+  --name deployhub-web \
   --restart unless-stopped \
-  --network host \
-  --group-add "$(getent group docker | cut -d: -f3)" \
+  --init \
+  --publish 127.0.0.1:8080:3000 \
   --volume /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
   --volume /var/lib/deployhub:/var/lib/deployhub \
   --env-file /etc/deployhub/deployhub.env \
   --log-opt max-size=10m --log-opt max-file=3 \
   deployhub:current
 ```
 
-Line by line, because every one of them is load-bearing:
+### The worker
 
-| Flag                       | Why                                                                                                                                                                    |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--restart unless-stopped` | The host has no process manager. This is what replaces one, and it survives reboot.                                                                                    |
-| `--network host`           | Candidate health checks, the Caddy admin API, and public-route verification all address the host's loopback. See [Container architecture](#container-architecture).    |
-| `--group-add <docker gid>` | Grants the non-root `node` user access to the socket. Resolved from the host at run time — the gid differs between machines, so it must never be baked into the image. |
-| `-v …/docker.sock`         | The entire mechanism by which a containerized DeployHub controls host Docker.                                                                                          |
-| `-v /var/lib/deployhub:…`  | Same path on both sides. Database, WAL/SHM, workspaces, secrets.                                                                                                       |
-| `--env-file`               | Keeps `DEPLOYHUB_PASSWORD` out of the process table and out of shell history. Mode `0600`, root-owned, **outside the repository**.                                     |
-| `--log-opt max-size`       | The dashboard is long-lived; uncapped JSON logs are a slow disk-full.                                                                                                  |
+```bash
+docker run --detach \
+  --name deployhub-worker \
+  --restart unless-stopped \
+  --init \
+  --stop-timeout 1800 \
+  --volume /var/run/docker.sock:/var/run/docker.sock \
+  --group-add "$(getent group docker | cut -d: -f3)" \
+  --volume /var/lib/deployhub:/var/lib/deployhub \
+  --env-file /etc/deployhub/deployhub.env \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  deployhub:current \
+  node --experimental-transform-types --disable-warning=ExperimentalWarning \
+       --import /opt/deployhub/scripts/register-alias.mjs /opt/deployhub/scripts/worker.ts
+```
 
-There is **no `-p`**: under host networking the server binds `PORT` on the host directly. The image
-sets `HOSTNAME=127.0.0.1`, so the dashboard is reachable only through loopback and nginx must be the
-thing that fronts it. That is a bind, not just a firewall rule — the dashboard is not exposed even
-if ufw is misconfigured.
+Every flag, because each is load-bearing:
 
-There is **no `docker-compose.yml`**, deliberately. `docker build`, `docker run`, and nginx are the
-deployment model, matching the existing OneCommunity infrastructure. DeployHub controls container
-lifecycle directly rather than delegating it to Compose.
+| Flag                            | Why                                                                                                                                                                              |
+| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--restart unless-stopped`      | The host has no process manager. This replaces one, and it survives reboot. `unless-stopped` rather than `always` so a deliberate stop during maintenance is respected.          |
+| `--init`                        | Reaps orphans. The command runner SIGKILLs a command that exceeds its timeout, and a killed `git` leaves grandchildren reparented to PID 1; Node does not reap unknown children. |
+| `--publish 127.0.0.1:8080:3000` | **Web only.** Binds the dashboard to the host's loopback so nginx can reach it and nothing else can. Change `8080` if it is taken; the container side is always 3000.            |
+| `--stop-timeout 1800`           | **Worker only.** On SIGTERM it finishes the deployment in flight. Docker's 10s default would SIGKILL it mid-build, leaving a container half-replaced for the boot sweep to find. |
+| `--group-add <docker gid>`      | Grants the non-root `node` user access to the socket. Resolved from the host at run time — the gid differs between machines, so it must never be baked into the image.           |
+| `-v …/docker.sock`              | The mechanism by which a containerized DeployHub controls host Docker. Both containers need it: the worker to deploy, the web process to read state for the dashboard.           |
+| `-v /var/lib/deployhub:…`       | Same path both sides. Database, WAL/SHM, workspaces, secrets. Shared by both containers.                                                                                         |
+| `--env-file`                    | Keeps `DEPLOYHUB_PASSWORD` out of the process table and shell history. Mode `0600`, root-owned, **outside the repository**.                                                      |
+| `--log-opt max-size`            | Both are long-lived; uncapped JSON logs are a slow disk-full on the filesystem preflight guards.                                                                                 |
+
+**On user:** deliberately no `--user`. The image sets `USER node` (uid 1000) already, and passing
+`--user` wrongly is a way to lose the docker group membership. `--group-add` is what matters.
+
+**On the worker's command:** it runs the TypeScript sources under Node's type stripping, the same
+mechanism `npm run deployhub` uses. The long command line is the cost of having no bundler and no
+second build output to keep in step. It needs no `node_modules` — everything it touches is `@/…`
+source or a Node builtin.
+
+**No Docker Compose**, deliberately. `docker build`, `docker run`, and nginx are the deployment
+model, matching the existing OneCommunity infrastructure. DeployHub controls container lifecycle
+directly rather than delegating it to Compose.
 
 ### nginx
 
-nginx terminates TLS and proxies to the dashboard. The minimum that works:
+nginx terminates TLS and proxies to the dashboard. This is an **additive** server block — the
+OneCommunity block is not touched:
 
 ```nginx
 location / {
-    proxy_pass         http://127.0.0.1:3000;
+    proxy_pass         http://127.0.0.1:8080;
     proxy_http_version 1.1;
     proxy_set_header   Host              $host;
     proxy_set_header   X-Forwarded-Proto $scheme;
@@ -222,24 +246,21 @@ location / {
 }
 ```
 
-> **This is nginx in front of DeployHub only.** DeployHub's `ReverseProxy` adapter drives **Caddy**
-> through its admin API, and Caddy is what routes traffic to the applications DeployHub deploys.
-> Those are two different jobs. Caddy must still be installed and its admin API bound to
-> `localhost:2019` before any _deployment_ can promote a candidate; nginx has no admin API and
-> cannot substitute. See [Known constraints](#known-constraints).
+**DeployHub never modifies nginx.** Deployed containers publish on a fixed port, so the upstream
+that was correct before a deployment is correct after it. There is no proxy adapter, no config
+templating, and no reload — see
+[D12](architecture/decisions.md#d12--classic-replacement-stop-remove-run).
 
 ### Required bind mounts
 
-| Host path              | Container path         | Mode | Why                                                                  |
-| ---------------------- | ---------------------- | ---- | -------------------------------------------------------------------- |
-| `/var/run/docker.sock` | `/var/run/docker.sock` | rw   | Build images, start/stop/inspect containers, read the daemon version |
-| `/var/lib/deployhub`   | `/var/lib/deployhub`   | rw   | SQLite database + WAL + SHM, project workspaces, secrets file        |
+| Host path              | Container path         | Mode | Why                                                               |
+| ---------------------- | ---------------------- | ---- | ----------------------------------------------------------------- |
+| `/var/run/docker.sock` | `/var/run/docker.sock` | rw   | Build images, stop/remove/run containers, read the daemon version |
+| `/var/lib/deployhub`   | `/var/lib/deployhub`   | rw   | SQLite database + WAL + SHM, project workspaces, secrets file     |
 
-Both are mandatory. Without the socket every deployment fails at preflight with `DOCKER_UNAVAILABLE`;
-without the data mount the deployment history is written into the container's writable layer and is
-destroyed by the next upgrade.
-
----
+Both are mandatory, on both containers. Without the socket every deployment fails at preflight
+with `DOCKER_UNAVAILABLE`; without the data mount the two containers do not share a database and
+the deployment history dies with the container.
 
 ## Environment variables
 
@@ -254,15 +275,23 @@ Set in `/etc/deployhub/deployhub.env` (mode `0600`, root-owned). Defaults come f
 | `DEPLOYHUB_DATABASE`      | `<root>/deployhub.db`          | SQLite file                                                                                                           |
 | `DEPLOYHUB_WORKSPACES`    | `<root>/projects`              | One git checkout per project                                                                                          |
 | `DEPLOYHUB_SECRETS`       | `<root>/secrets.json`          | Must be mode `0600` or the adapter refuses to read it                                                                 |
-| `DEPLOYHUB_CADDY_ADMIN`   | `http://localhost:2019`        | Correct as-is under `--network host`                                                                                  |
-| `DEPLOYHUB_CADDY_SERVER`  | `main`                         | Server key inside `apps.http.servers`                                                                                 |
-| `DEPLOYHUB_BIND_HOST`     | `127.0.0.1`                    | Where candidates publish, and therefore where they are probed. Correct as-is under `--network host`                   |
-| `DEPLOYHUB_PUBLIC_SCHEME` | `https`                        | Scheme Caddy serves the public route on                                                                               |
-| `DEPLOYHUB_PUBLIC_PORT`   | `443`                          | Port Caddy serves the public route on                                                                                 |
+| `DEPLOYHUB_BIND_HOST`     | `127.0.0.1`                    | Interface **deployed containers** publish on. See below — this is the one to think about                              |
+| `DEPLOYHUB_PUBLIC_SCHEME` | `https`                        | Scheme the host's proxy serves the public route on                                                                    |
+| `DEPLOYHUB_PUBLIC_PORT`   | `443`                          | Port the host's proxy serves the public route on                                                                      |
 | `DEPLOYHUB_STORAGE_PATH`  | `/var/lib/deployhub` _(image)_ | Overridden by the image; the code default would fail. See below                                                       |
 | `DEPLOYHUB_LEASE_TTL_MS`  | `60000`                        | How long a deploy lease survives without a heartbeat                                                                  |
 | `PORT`                    | `3000` _(image)_               | Port the dashboard binds                                                                                              |
-| `HOSTNAME`                | `127.0.0.1` _(image)_          | Address the dashboard binds. Do not widen under host networking                                                       |
+| `HOSTNAME`                | `0.0.0.0` _(image)_            | Interface the dashboard binds **inside the container**. `--publish 127.0.0.1:8080:3000` is what confines it           |
+
+**`DEPLOYHUB_BIND_HOST` decides who can reach a deployed application.** `127.0.0.1` publishes to
+the host's loopback only, so the application is reachable exactly through nginx — the safer value,
+and where new projects should land. `0.0.0.0` reproduces a plain `-p 3000:3000`, which is what an
+existing deployment already does, and matching it exactly is what makes the first adoption of
+OneCommunity a no-op rather than a change. Set it to `0.0.0.0` for the first validation, then
+tighten to `127.0.0.1` once staging has confirmed nothing reaches the app directly.
+
+It affects only the containers DeployHub _deploys_. The dashboard's own exposure is decided by
+`--publish`, which is loopback-only in both cases.
 
 **`DEPLOYHUB_STORAGE_PATH` is the one default the image has to change.** Preflight runs
 `df -Pk <path>` and aborts the deployment if the command fails
@@ -271,10 +300,10 @@ on a host and does not exist inside the image, so leaving it would refuse every 
 `COMMAND_FAILED`. Verified:
 
 ```
-$ docker exec deployhub df -Pk /var/lib/docker
+$ docker exec deployhub-worker df -Pk /var/lib/docker
 df: /var/lib/docker: No such file or directory
 
-$ docker exec deployhub df -Pk /var/lib/deployhub | tail -1
+$ docker exec deployhub-worker df -Pk /var/lib/deployhub | tail -1
 /dev/vda1        474095688 6518136 443421344       2% /var/lib/deployhub
 ```
 
@@ -290,6 +319,10 @@ DEPLOYHUB_PASSWORD=<openssl rand -hex 24>
 DEPLOYHUB_ACTOR=dashboard
 DEPLOYHUB_PUBLIC_SCHEME=https
 DEPLOYHUB_PUBLIC_PORT=443
+
+# Matches OneCommunity's existing `-p 3000:3000` for the first validation.
+# Tighten to 127.0.0.1 once staging confirms nothing reaches the app directly.
+DEPLOYHUB_BIND_HOST=0.0.0.0
 ```
 
 This file is **not** `.env`, is not in the repository, and is never copied into the image.
@@ -358,21 +391,26 @@ An empty result or _"permission denied while trying to connect to the Docker API
 
 Assumes the host hardening in `docs/internal/DEPLOYHUB_PROJECT_STATE.md` (steps 1–11) is done:
 non-root sudo user, SSH keys, password auth disabled, ufw default-deny with 22/80/443 open and
-**2019 and 3000 closed**, Docker from Docker's own apt repository, git, nginx.
+**8080 closed**, Docker from Docker's own apt repository, git, nginx.
 
-1. **Install Caddy** and bootstrap its admin API on `localhost:2019` — see `docs/ops/host-spike.md`.
-   Required before any deployment can promote a candidate.
-2. **Clone the repository** to `/opt/deployhub` (build location; not the data root).
+No new infrastructure is installed. The host gains no service it did not already run.
+
+1. **Check the dashboard port is free**: `ss -ltnp | grep 8080`. Pick another if it is taken.
+2. **Clone the repository** to `/opt/deployhub-src` (build location; not the data root, and not
+   `/opt/deployhub`, which is where the image keeps the worker's sources).
 3. **Create the data root and secrets file** — see [Persistent storage](#persistent-storage).
 4. **Write `/etc/deployhub/deployhub.env`**, `chmod 600`, root-owned.
 5. **Build the image** — see [Build command](#build-command).
-6. **Start the container** — see [Run command](#run-command).
-7. **Verify the socket**: `docker exec deployhub docker version --format '{{.Server.Version}}'`.
-8. **Verify the dashboard**: `curl -sI http://127.0.0.1:3000/signin` returns 200; `/` returns 307 to
-   `/signin`.
-9. **Configure nginx** for the dashboard host, obtain a certificate, reload.
-10. **Sign in** and register the first project.
-11. **Confirm the firewall** still denies 3000 and 2019 from outside.
+6. **Start both containers** — see [Run command](#run-command).
+7. **Verify the socket**: `docker exec deployhub-worker docker version --format '{{.Server.Version}}'`.
+8. **Verify the worker is looping**: `docker logs deployhub-worker` shows `worker … started`.
+9. **Verify the dashboard**: `curl -sI http://127.0.0.1:8080/signin` returns 200; `/` returns 307
+   to `/signin`.
+10. **Configure nginx** for the dashboard host — an additive server block — obtain a certificate,
+    reload.
+11. **Sign in** and register OneCommunity, with `containerPort: 3000` and the container name it
+    already uses.
+12. **Confirm the firewall** still denies 8080 from outside.
 
 ## Upgrade procedure
 
@@ -380,37 +418,46 @@ The image is disposable; the data root is not. Nothing in these steps touches
 `/var/lib/deployhub`.
 
 ```bash
-cd /opt/deployhub
+cd /opt/deployhub-src
 git fetch --all && git checkout <ref>
 
 # Build first. A failed build must not take the running dashboard down.
 docker build --tag deployhub:$(git rev-parse --short HEAD) --tag deployhub:next .
 
-docker stop deployhub && docker rm deployhub
+# Stop the worker first and give it time to finish anything in flight.
+docker stop deployhub-worker
+docker stop deployhub-web
+docker rm deployhub-worker deployhub-web
+
 docker tag deployhub:next deployhub:current
-docker run --detach --name deployhub … deployhub:current   # the full command above
+# Both run commands from above.
 ```
 
-Build before stopping, always: a compile error then costs nothing, and the previous container is
+Build before stopping, always: a compile error then costs nothing, and the previous containers are
 still serving while it happens.
 
-Expect a short outage. DeployHub gives the applications it deploys zero downtime through
-candidate-then-promote; it does not currently do that for itself, because that needs a second
-instance and a proxy switch, and running two dashboards against one SQLite file is a change to
-think about rather than a flag to set. The upgrade is a few seconds and does not interrupt any
-running deployment container.
+**Stop the worker first, and let it drain.** `--stop-timeout 1800` gives it up to half an hour to
+finish the deployment it is on. Killing it mid-deployment leaves a project with a half-replaced
+container — recoverable by the boot sweep, but an outage until the next deployment.
+
+Expect a short dashboard outage. DeployHub does not deploy itself with zero downtime, for the same
+reason it does not deploy anything else that way: it would need a second instance and a proxy
+switch. Deployed applications are unaffected — their containers are the host's and keep serving
+throughout.
 
 Verify afterwards: the dashboard answers, the deployment history is intact (proof the mount is
-attached), and `docker exec deployhub docker version` still reports a server version.
+attached), the worker logs `worker … started`, and `docker exec deployhub-worker docker version`
+reports a server version.
 
 ## Rollback procedure
 
 Rolling DeployHub back is retagging, because the sha tags were kept:
 
 ```bash
-docker stop deployhub && docker rm deployhub
+docker stop deployhub-worker deployhub-web
+docker rm deployhub-worker deployhub-web
 docker tag deployhub:<previous-sha> deployhub:current
-docker run --detach --name deployhub … deployhub:current
+# Both run commands from above.
 ```
 
 Two things this does **not** do, deliberately:
@@ -453,11 +500,12 @@ Consequences that follow, and should not be argued away:
   root password: long, random, in the team's secret store, rotated on any suspicion. A leaked
   session cookie is equally bad — the session is an HMAC of the password with no expiry, so
   rotating the password is what invalidates every cookie.
-- **Therefore the dashboard must never be publicly reachable without TLS and a real reason.** The
-  image binds `127.0.0.1`, ufw denies 3000 inbound, and nginx terminates TLS. All three, not one.
-- **`--network host` adds little to this risk.** It removes network isolation from a container that
-  already holds root-equivalent access to the host. Ranking it as a serious additional exposure
-  would be misreading where the boundary actually is.
+- **Therefore the dashboard must never be publicly reachable without TLS and a real reason.** It
+  is published to `127.0.0.1` only, ufw denies 8080 inbound, and nginx terminates TLS. All three,
+  not one.
+- **Both containers hold the socket, so both are privileged.** The worker needs it to deploy; the
+  web process needs it to read host state for the dashboard. Splitting them buys process
+  separation and restart independence, not a privilege boundary.
 
 The honest summary: DeployHub is a privileged host agent. The container is packaging, not a
 sandbox. If a stronger boundary is ever needed, the answer is a socket proxy that allowlists API
@@ -472,12 +520,13 @@ endpoints, or rootless Docker — not a tighter `docker run` line.
 - **No install-time script execution.** The build uses `npm ci --ignore-scripts`.
 - **Pinned bases.** Concrete Node and Docker CLI versions, never `latest`, so an image rebuilt for a
   rollback is the image that was rolled back to.
-- **Minimal runtime surface.** No npm, no `next` CLI, no TypeScript, no test runner, no compiler, no
-  source tree, no Docker daemon.
+- **Minimal runtime surface.** No npm, no `next` CLI, no test runner, no compiler, no Docker
+  daemon. The worker's TypeScript sources are present under `/opt/deployhub` because it runs them
+  directly; they are the same sources the image was built from, and they carry no secrets.
 - **Secrets never enter argv.** The git credential helper reads the token from the environment,
   because a failed command's argv is written to the deployment log and its environment is not.
-- **Keep the Caddy admin API on loopback.** It can repoint production traffic and has no
-  authentication.
+- **Nothing writes to the host's proxy config.** There is no adapter that could, which removes a
+  whole class of risk that a config-rewriting deployment tool carries.
 
 ### No HEALTHCHECK, on purpose
 
@@ -500,22 +549,29 @@ nothing. That is a small, well-defined piece of work, and inventing a fake one t
 
 ## Known constraints
 
-Things this image does not fix, recorded so they are not rediscovered.
+Things this architecture does not do, recorded so they are not rediscovered.
 
-**There is still no long-running worker.** This is the blocker for end-to-end operation, and
-containerization does not change it. The only `new Worker(...)` in the repository is in
-`scripts/deployhub.ts` with `maxDeployments: 1`. The dashboard's Deploy button enqueues a deployment
-that nothing picks up. The image runs the web process only. Building the worker entrypoint is
-tracked in `docs/internal/DEPLOYHUB_PROJECT_STATE.md`; when it lands it needs a decision about
-whether it ships as a second container from this same image (`CMD` override, sharing the data mount
-and the socket) or as a child process — the former fits this architecture and needs no supervisor.
+**Deployments are not zero-downtime.** The site is down from the moment the previous container is
+stopped until the new one answers — seconds normally, longer if the new image crashes on boot.
+This is [D12](architecture/decisions.md#d12--classic-replacement-stop-remove-run), chosen so that
+DeployHub needs no control over the host's reverse proxy. Zero downtime returns as a strategy when
+a project needs it, and D8 records the design.
 
-**Caddy is still required for deployments.** nginx fronts the dashboard, but the `ReverseProxy`
-adapter speaks Caddy's admin API and nothing else. Until Caddy is installed and bootstrapped, a
-deployment reaches the promote step and fails there.
+**DeployHub does not deploy itself.** Its own upgrade is `docker stop`/`docker run` by hand, as
+above.
 
-**The CLI is not in the runtime image.** `scripts/deployhub.ts` runs from a checkout with
-devDependencies; standalone output excludes it. Operate through the dashboard, or run the CLI from
-`/opt/deployhub` on a host that has Node — which the target host deliberately does not. If the CLI
-is needed on the server, the clean answer is a second `CMD` against this image once the worker
-entrypoint exists.
+**Cloudflare sits inside the deployment success path.** The post-promotion check probes
+`https://<route.host>` with `User-Agent: DeployHub/health-check`. If Cloudflare answers 403 — Bot
+Fight Mode, a WAF rule, Under Attack mode — the engine reads a failed verification and **rolls back
+a deployment that actually worked**. Allowlist that User-Agent, or point `DEPLOYHUB_PUBLIC_*` at the
+origin, before the first real deployment.
+
+**No migration runner.** Schema creation is `create table if not exists`, so an older image reads a
+newer database happily today. The first change that rewrites existing rows ends that. Snapshot
+`/var/lib/deployhub` before every upgrade until one exists.
+
+**The CLI is not in the runtime image.** `scripts/deployhub.ts` needs devDependencies for its
+imports; the worker's tree carries only what the worker touches. Operate through the dashboard.
+
+**One project per container name, and no multi-project UI yet.** The engine and the domain support
+several; the dashboard resolves "the project" as `projects[0]`.
