@@ -246,8 +246,22 @@ directly rather than delegating it to Compose.
 
 ### nginx
 
-nginx terminates TLS and proxies to the dashboard. This is an **additive** server block — the
-OneCommunity block is not touched:
+The full site file is `docs/ops/nginx-deployhub.conf`, validated against a real nginx. It is an
+**additive** server block — no `default_server`, and the OneCommunity block is not touched:
+
+```bash
+sudo cp docs/ops/nginx-deployhub.conf /etc/nginx/sites-available/deployhub
+sudo sed -i 's/deployhub\.example\.com/YOUR-HOST-OR-IP/' /etc/nginx/sites-available/deployhub
+sudo ln -s /etc/nginx/sites-available/deployhub /etc/nginx/sites-enabled/deployhub
+sudo nginx -t                  # validates every site, including OneCommunity's
+sudo systemctl reload nginx    # graceful: existing connections drain
+```
+
+Check for a conflicting default server first — `sudo nginx -T | grep -nE 'listen|server_name'`.
+Two `default_server` directives on port 80 make `nginx -t` fail. If it does fail, nothing has
+changed yet: `sudo rm /etc/nginx/sites-enabled/deployhub` and you are back where you started.
+
+The essentials, if you are writing it by hand:
 
 ```nginx
 location / {

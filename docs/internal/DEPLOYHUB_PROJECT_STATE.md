@@ -332,34 +332,55 @@ real containers, real Caddy switches, real HTTP probes:
 
 ## Current Development Phase
 
-**Development has intentionally paused before Linux deployment.**
+**Paused mid-VPS-validation, on 2026-08-02. Both containers are running on the VPS.**
 
-Everything so far was built and verified on **macOS**. That was the right way to get here quickly, and
-it is explicitly not the same as working on the target platform. The next phase is therefore not new
-features.
+### Where things stand, exactly
 
-### Current phase: Real Linux validation
+DeployHub is installed and running on the Ubuntu VPS. `deployhub-web` and `deployhub-worker` are
+both up, `curl http://127.0.0.1:8080/signin` returns 200, and the worker reaches the host's Docker
+daemon. **Nothing has been deployed through it yet** — no project is registered and no deployment
+has ever run end to end.
 
-The goal is to prove the platform operates on Ubuntu, fix what differs, and then deploy One Community
-to staging as the first real application.
+### The immediate next task
 
-**Do not start new features until this phase is finished.** Adding multi-project support on top of a
-platform that has never run on its target OS would mean debugging two unknowns at once.
+**Put nginx in front of the dashboard.** The config is written and validated but **not yet applied
+to the server**: `docs/ops/nginx-deployhub.conf`. Procedure in `docs/docker.md` § nginx. In short:
+copy to `sites-available/deployhub`, set `server_name`, symlink, `nginx -t`, `systemctl reload`.
+
+Two things to be careful about, both recorded in the file itself:
+
+- **Do not add `default_server`.** OneCommunity is served by the same nginx; a second default
+  server on port 80 makes `nginx -t` fail and would be caught before reload — but check
+  `sudo nginx -T | grep -nE "listen|server_name"` first anyway.
+- **Port 80 is plain HTTP, and the dashboard password is a root credential** (the container holds
+  the Docker socket). Restrict with `ufw allow from <your ip> to any port 80 proto tcp`, or skip
+  nginx during validation and use `ssh -L 8080:127.0.0.1:8080`. HTTPS and Cloudflare are
+  deliberately deferred until the MVP is validated.
+
+### After nginx
+
+1. Register OneCommunity through `/setup`. **Container name `one-community`** (the name the
+   running container already uses — it is read-only after creation) and **container port 3000**.
+2. First real deployment. Expect it to stop and remove the hand-started container and replace it.
+   **There is no rollback target on the first run** — an unlabelled namesake is not recognised as
+   a baseline, so that deployment is a first deploy. Do it when a short outage is acceptable.
+3. Validate rollback by deliberately failing a health check.
+4. Confirm logs are captured per step and secrets are redacted.
 
 ### Known Linux-specific risks
 
-1. **`df -Pk` column order** — marked `[verify on Linux]` in `docs/ops/host-spike.md`. Preflight's
-   free-space check parses total from column 2 and available from column 4. macOS and GNU coreutils
-   agree under `-P`, but the column _order_ needs confirming on the target. If it differs, preflight
-   will either refuse a healthy server or fail to catch a full disk.
-2. **The long-running worker** — see the gap noted under [Worker](#worker). This must be built before
-   the dashboard can deploy anything on the server.
-3. **Docker socket permissions** — the DeployHub process needs to reach `/var/run/docker.sock`. That
-   means a group membership decision, and it is a privilege boundary worth thinking about rather than
-   solving with `sudo`.
-4. **Cloudflare in the verification path** — the post-deployment check probes the public route, so
-   a Cloudflare 403 against `User-Agent: DeployHub/health-check` would roll back a deployment that
-   actually worked. Allowlist it, or point `DEPLOYHUB_PUBLIC_*` at the origin.
+1. ~~**`df -Pk` column order**~~ — resolved. The runtime image is Debian, so GNU coreutils, and
+   columns 2 and 4 are total and available as the adapter assumes. Verified inside the image.
+2. ~~**The long-running worker**~~ — built (`scripts/worker.ts`), shipped in the image, running on
+   the VPS.
+3. ~~**Docker socket permissions**~~ — resolved by `--group-add "$(getent group docker | cut -d: -f3)"`
+   at run time, and the startup check now reports an `EACCES` there as a missing `--group-add`
+   rather than letting it surface at the first deployment.
+4. **Cloudflare in the verification path** — still open, and the highest-risk item remaining. The
+   post-deployment check probes the public route with `User-Agent: DeployHub/health-check`. A
+   Cloudflare 403 reads as a failed verification and **rolls back a deployment that worked**.
+   Allowlist that User-Agent, or point `DEPLOYHUB_PUBLIC_*` at the origin, before the first real
+   deployment of a Cloudflare-fronted app.
 
 ---
 
@@ -388,18 +409,23 @@ A VPS has been purchased specifically for Linux validation.
 
 ### Status
 
-Not yet provisioned. No connection details are recorded in this repository — and none should be.
-Hostnames, IP addresses, usernames, SSH keys, and passwords belong in the team's secret store, never in
-a file that is committed. This document tracks _what has been done_, not _how to get in_.
+**Provisioned, hardened, and running DeployHub** as of 2026-08-02. Docker, git, nginx, and ufw are
+installed; the data root is prepared; both containers are up.
+
+No connection details are recorded in this repository — and none should be. Hostnames, IP
+addresses, usernames, SSH keys, and passwords belong in the team's secret store, never in a file
+that is committed. This document tracks _what has been done_, not _how to get in_.
 
 ---
 
 ## Next Development Plan
 
-Follow this order. Steps 1–11 harden the server before anything of ours is on it; the ordering is not
-arbitrary and skipping ahead is how a box ends up exposed.
+**Steps 1–15 are done.** The server is hardened and DeployHub is running on it. Resume at
+[step 16](#platform-validation) — but do nginx first; it is not in this list because it was not
+foreseen when the list was written, and it is now the immediate next action recorded under
+[Current Development Phase](#current-development-phase).
 
-### Server provisioning
+### Server provisioning — ✅ complete
 
 1. **First login to the VPS.**
 2. **Update Ubuntu** — `apt update && apt full-upgrade`, then reboot if the kernel changed.
@@ -417,19 +443,27 @@ arbitrary and skipping ahead is how a box ends up exposed.
 11. **Verify Docker** — `docker run --rm hello-world` as the non-root user, which also proves the group
     membership from step 9.
 
-### DeployHub setup
+### DeployHub setup — ✅ complete
 
 12. **Clone DeployHub.**
-13. **Configure the environment** — see [Environment](#environment) below, and create the secrets file
-    at mode `0600`.
+13. **Configure the environment** — see [Environment](#environment) below. The secrets file and the
+    data root are created by `sudo docs/ops/install.sh`, which must run **before** the first
+    `docker run`.
 14. **Execute Linux Readiness validation** — work through `docs/ops/host-spike.md` command by command
     against this host, and resolve every `[verify on Linux]` marker.
 15. **Fix Linux-specific issues** — expect `df -Pk` parsing and Docker socket permissions first.
 
-### Platform validation
+### Platform validation — ⬅ **resume here**
 
-16. **Validate Deploy** — a real deployment end to end, then confirm zero downtime under load as was
-    measured on macOS.
+15a. **Put nginx in front of the dashboard** — `docs/ops/nginx-deployhub.conf`, procedure in
+`docs/docker.md` § nginx. Written and validated, not yet applied.
+
+15b. **Register OneCommunity** through `/setup`: container name `one-community`, container port 3000. Both are read-only after creation.
+
+16. **Validate Deploy** — a real deployment end to end. **Expect downtime**: the classic strategy
+    (D12) stops and removes the previous container before starting the new one. The zero-downtime
+    measurements taken on macOS were under the superseded candidate-then-promote design and no
+    longer apply.
 17. **Validate Rollback** — including the automatic path, by deliberately failing a health check.
 18. **Validate Logs** — captured per step, complete, and with secrets redacted.
 19. **Validate Worker** — verify the boot sweep recovers correctly when the worker container is
@@ -442,8 +476,11 @@ arbitrary and skipping ahead is how a box ends up exposed.
   No systemd unit; `--restart unless-stopped` is the supervisor.
 - ~~`df -Pk` parsing~~ — confirmed inside the runtime image, which is Debian and therefore GNU
   coreutils. Columns 2 and 4 are total and available, as the adapter assumes.
+- ~~Docker socket permissions~~ — `--group-add` at run time; the startup check now names it.
 - A **deployment guide** in `docs/ops/` recording what was actually done to this server, so the next
-  server does not require rediscovery. `docs/docker.md` covers the container side.
+  server does not require rediscovery. `docs/docker.md` covers the container side and
+  `docs/ops/install.sh` covers host preparation; what is still missing is a record of the
+  provisioning steps 1–11 as actually performed.
 
 ---
 
@@ -563,6 +600,52 @@ directly. Defaults in parentheses.
 
 Newest first. Each entry: date, what was completed, what remains, blockers, and the next immediate
 task. **Add an entry after every significant milestone.**
+
+### 2026-08-02 (evening) — Paused. DeployHub is running on the VPS.
+
+**Stop point.** Work paused here deliberately, not because anything is broken.
+
+**State of the server.** `deployhub-web` and `deployhub-worker` both running.
+`curl http://127.0.0.1:8080/signin` → 200. The worker reaches the host Docker daemon. The data
+root is prepared and owned by uid 1000. **No project is registered and no deployment has ever
+run.** The dashboard is reachable only on the host's loopback; nginx is not yet configured.
+
+**Written today but not yet applied to the server:** `docs/ops/nginx-deployhub.conf`. Validated
+against a real nginx — config parses, and a proxy test confirmed `Host`, `X-Real-IP`,
+`X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Port` all arrive correctly, with a
+WebSocket upgrade returning 101. It has not been copied to `/etc/nginx/sites-available/` yet.
+
+**To resume, in order.**
+
+1. Apply the nginx site — `docs/docker.md` § nginx has the exact commands. Run
+   `sudo nginx -T | grep -nE "listen|server_name"` first: OneCommunity shares this nginx, and a
+   second `default_server` on port 80 would fail `nginx -t`.
+2. Restrict port 80 before exposing it. `DEPLOYHUB_PASSWORD` is a root credential — the container
+   holds the Docker socket — and plain HTTP puts it and the session cookie on the wire in
+   cleartext. `ufw allow from <your ip> to any port 80 proto tcp`, or use
+   `ssh -L 8080:127.0.0.1:8080` and skip nginx during validation.
+3. Register OneCommunity: container name `one-community`, port 3000, both read-only after
+   creation.
+4. First deployment. **It will cause a short outage and has no rollback target** — the
+   hand-started container carries no DeployHub labels, so baseline capture treats this as a first
+   deploy. Pick a moment when that is acceptable.
+
+**Open risks, unchanged.**
+
+- 🔴 **Cloudflare can roll back a working deployment.** The post-deployment check probes the public
+  route as `User-Agent: DeployHub/health-check`; a 403 reads as failed verification. Fix before
+  deploying anything Cloudflare fronts.
+- 🟡 **No deployment has ever run end to end.** Every stage is proven in isolation; the whole chain
+  is not.
+- 🟡 **No backups.** `/var/lib/deployhub` holds the only copy of `secrets.json`, and there is no
+  migration runner, so snapshot before any upgrade.
+- 🟡 **HTTPS deferred** by decision, to be added after MVP validation.
+
+**Branch.** `classic-deployment-strategy`, pushed. `main` is still at `29cfb78` — the branch has
+never been merged, and the pivot from candidate-then-promote to classic replacement lives entirely
+on it.
+
+---
 
 ### 2026-08-02 — First VPS install failed; startup check, installer, and `--mount`
 
