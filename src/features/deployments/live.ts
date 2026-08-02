@@ -41,3 +41,27 @@ export function pollDelay(millisSinceLastChange: number): number {
 export function isLive(state: DeploymentState): boolean {
   return !isTerminal(state) && state !== "interrupted";
 }
+
+/**
+ * Whether the previous release is still running and still serving.
+ *
+ * The hero says so out loud while a deployment is in flight, which makes this the one derived
+ * fact in the product that must never be optimistic. Under the classic strategy (D12) the
+ * previous container is stopped and removed at `starting`, so the reassurance holds up to that
+ * point and not one state further.
+ *
+ * Written as an allow-list of states rather than as "not one of these" so that a state added
+ * later is treated as unsafe until someone decides otherwise. Getting this wrong in the other
+ * direction tells a reader production is fine while their site is down.
+ */
+const BEFORE_DISPLACEMENT: readonly DeploymentState[] = [
+  "queued",
+  "validating",
+  "preparing",
+  "fetching",
+  "building",
+];
+
+export function previousReleaseStillServing(state: DeploymentState): boolean {
+  return BEFORE_DISPLACEMENT.includes(state);
+}

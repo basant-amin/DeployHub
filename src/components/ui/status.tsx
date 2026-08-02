@@ -30,7 +30,7 @@ const ACTIVE_LABELS: Partial<Record<DeploymentState, string>> = {
   building: "Building",
   starting: "Starting",
   health_checking: "Health checking",
-  promoting: "Promoting",
+  promoting: "Verifying",
   finalizing: "Finalizing",
   rolling_back: "Rolling back",
 };

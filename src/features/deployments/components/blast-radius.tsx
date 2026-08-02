@@ -7,8 +7,11 @@
  * **cause**, then **action** — in that order, always. The exit code is third because it is the
  * least urgent of the three.
  *
- * Impact is derived, not stored: a deployment that never reached `promoting` never moved traffic,
- * which the timeline proves.
+ * Impact is derived, not stored, and the timeline proves it. Under the classic strategy (D12) the
+ * boundary is `starting`: that is where the previous container is stopped and removed, so a
+ * deployment that never reached it never touched what users see. This is deliberately *not*
+ * `promoting`, which is where the boundary sat when a candidate ran alongside the live release —
+ * reading it from there now would tell someone production was fine while their site was down.
  */
 
 import type { DeploymentDetail } from "@/core/application";
@@ -25,7 +28,8 @@ export function BlastRadius({
   liveCommitSha: string | undefined;
   actions?: React.ReactNode;
 }) {
-  const promoted = detail.timeline.some((entry) => entry.state === "promoting");
+  // `starting` is where the previous container is displaced. Everything from here on had impact.
+  const displaced = detail.timeline.some((entry) => entry.state === "starting");
 
   if (detail.state === "rollback_failed") {
     return (
@@ -51,9 +55,9 @@ export function BlastRadius({
       <Callout tone="warn">
         <Headline>Rolled back automatically</Headline>
         <p className="text-ink mt-1.5">
-          Traffic was returned to{" "}
-          <Mono className="text-ink">{shortSha(liveCommitSha) || "the previous release"}</Mono>.
-          Production was briefly affected while the switch was verified
+          <Mono className="text-ink">{shortSha(liveCommitSha) || "The previous release"}</Mono> was
+          started again and is serving. Production was down from the moment the previous container
+          was stopped until it came back
           {window === undefined ? "" : ` (about ${formatDuration(window)})`}.
         </p>
         <Cause detail={detail} />
@@ -67,8 +71,8 @@ export function BlastRadius({
       <Callout tone="bad">
         {/* The sentence people actually need, and almost nobody prints. */}
         <Headline>
-          {promoted
-            ? "This deployment did not ship"
+          {displaced
+            ? "This deployment did not ship, and production was affected"
             : `Production was not affected — ${shortSha(liveCommitSha)} stayed live throughout`}
         </Headline>
         <Cause detail={detail} />
@@ -82,8 +86,8 @@ export function BlastRadius({
       <Callout tone="warn">
         <Headline>DeployHub lost track of this deployment</Headline>
         <p className="text-ink mt-1.5">
-          The worker running it stopped before it finished. The route is unchanged; the next
-          deployment will re-read the live state from the server.
+          The worker running it stopped before it finished. The next deployment will re-read the
+          live state from the server — check what is running before triggering one.
         </p>
         {actions}
       </Callout>

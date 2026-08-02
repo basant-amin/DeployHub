@@ -9,6 +9,7 @@ import {
   POLL_SLOW_MILLIS,
   isLive,
   pollDelay,
+  previousReleaseStillServing,
 } from "./live";
 
 describe("pollDelay", () => {
@@ -68,5 +69,48 @@ describe("isLive", () => {
       expect(typeof isLive(state), state).toBe("boolean");
     }
     expect(DEPLOYMENT_STATES.filter((state) => isLive(state))).toHaveLength(10);
+  });
+});
+
+describe("previousReleaseStillServing", () => {
+  it("is true only while nothing has been displaced", () => {
+    for (const state of ["queued", "validating", "preparing", "fetching", "building"] as const) {
+      expect(previousReleaseStillServing(state), state).toBe(true);
+    }
+  });
+
+  it("is false from `starting` onward, where the previous container has been removed", () => {
+    // The regression this exists for: saying "still live and serving traffic" during a
+    // deployment that has already taken production down. `starting` is the boundary under the
+    // classic strategy, and it moved here from `promoting` when the strategy changed (D12).
+    for (const state of [
+      "starting",
+      "health_checking",
+      "promoting",
+      "finalizing",
+      "rolling_back",
+    ] as const) {
+      expect(previousReleaseStillServing(state), state).toBe(false);
+    }
+  });
+
+  it("never claims safety for a terminal or interrupted deployment", () => {
+    for (const state of [
+      "succeeded",
+      "failed",
+      "rolled_back",
+      "canceled",
+      "rollback_failed",
+      "interrupted",
+    ] as const) {
+      expect(previousReleaseStillServing(state), state).toBe(false);
+    }
+  });
+
+  it("has an answer for every state, and defaults a new one to unsafe", () => {
+    for (const state of DEPLOYMENT_STATES) {
+      expect(typeof previousReleaseStillServing(state), state).toBe("boolean");
+    }
+    expect(DEPLOYMENT_STATES.filter((state) => previousReleaseStillServing(state))).toHaveLength(5);
   });
 });

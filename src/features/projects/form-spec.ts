@@ -152,7 +152,7 @@ export const PROJECT_FORM: readonly FieldGroup[] = [
   {
     title: "Health check",
     caption:
-      "What healthy means. DeployHub probes the new container here before it moves any traffic, and refuses to promote a candidate that never passes.",
+      "What healthy means. DeployHub probes the new container here after starting it, and puts the previous release back if it never passes.",
     columns: 2,
     fields: [
       { name: "config.healthCheck.path", label: "Path", placeholder: "/healthz" },
@@ -173,14 +173,14 @@ export const PROJECT_FORM: readonly FieldGroup[] = [
         name: "config.healthCheck.requiredConsecutivePasses",
         label: "Consecutive passes",
         kind: "number",
-        hint: "Above one, a service that flaps pass/fail/pass is never promoted.",
+        hint: "Above one, a service that flaps pass/fail/pass is never accepted as healthy.",
         placeholder: "2",
       },
       {
         name: "config.healthCheck.totalBudgetMillis",
         label: "Total budget (ms)",
         kind: "number",
-        hint: "How long a candidate has to become healthy before the deployment gives up.",
+        hint: "How long the new container has to become healthy before the deployment rolls back.",
         placeholder: "60000",
         issueAliases: ["config.healthCheck.totalBudget"],
       },

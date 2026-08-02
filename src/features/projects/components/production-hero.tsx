@@ -6,8 +6,10 @@
  * nothing moves when one replaces the other.
  *
  * While a deployment is running it shows the sentence no other tool in this category shows:
- * **the previous release is still live and serving traffic.** That is true for every state up to
- * promotion, and it is the single most reassuring fact available to a reader watching a build.
+ * **the previous release is still live and serving traffic.** Under the classic strategy that is
+ * true up to `starting` and no further — from there the previous container has been removed and
+ * the new one is what users are hitting. The line therefore changes rather than persisting, because
+ * a reassurance that outlives its truth is worse than no reassurance at all.
  */
 
 import { ArrowUpRight, RotateCcw } from "lucide-react";
@@ -19,6 +21,7 @@ import { StatusDot, statusMeta } from "@/components/ui/status";
 import { describeTarget, formatRef, formatRelative, shortSha } from "@/lib/format";
 
 import { RelativeTime } from "@/features/deployments/components/relative-time";
+import { previousReleaseStillServing } from "@/features/deployments/live";
 
 export function ProductionHero({
   project,
@@ -61,7 +64,7 @@ export function ProductionHero({
       {active === undefined ? (
         <RollbackHint project={project} action={rollbackAction} />
       ) : (
-        <StillLive project={project} activeId={active.id} />
+        <ServingNow project={project} active={active} />
       )}
     </Panel>
   );
@@ -227,22 +230,35 @@ function RollbackHint({ project, action }: { project: ProjectOverview; action: R
   );
 }
 
-/** The reassurance line. True until promotion, and the domain knows exactly when it stops being. */
-function StillLive({ project, activeId }: { project: ProjectOverview; activeId: string }) {
+/**
+ * What is serving traffic right now, while a deployment is in flight.
+ *
+ * Two sentences, and which one appears is a fact about the host rather than a tone choice:
+ * before the previous container is displaced it is still serving every request, and after it the
+ * new one is — unverified, which is exactly what the reader needs to know.
+ */
+function ServingNow({ project, active }: { project: ProjectOverview; active: DeploymentSummary }) {
+  const stillServing = previousReleaseStillServing(active.state);
   return (
     <div className="border-line bg-canvas mt-5 flex flex-wrap items-center justify-between gap-3 rounded-md border px-3.5 py-2.5 text-[13px]">
       <span className="text-ink-2">
         {project.liveCommitSha === undefined ? (
           "Nothing is serving traffic yet."
-        ) : (
+        ) : stillServing ? (
           <>
             <Mono className="text-ink">{shortSha(project.liveCommitSha)}</Mono> is still live and
             serving traffic.
           </>
+        ) : (
+          <>
+            The new release is serving traffic and is being verified.{" "}
+            <Mono className="text-ink">{shortSha(project.liveCommitSha)}</Mono> comes back
+            automatically if it fails.
+          </>
         )}
       </span>
       <Link
-        href={`/deployments/${activeId}`}
+        href={`/deployments/${active.id}`}
         className="text-ink-2 decoration-line hover:text-ink underline underline-offset-4 transition-colors duration-100"
       >
         View deployment →
