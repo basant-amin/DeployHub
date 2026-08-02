@@ -5,10 +5,13 @@
  * extensionless relative imports. This hook teaches Node the same rules, so the CLI runs the
  * real source directly — no build step and no second copy of the code to keep in step.
  */
-import { pathToFileURL } from "node:url";
-import { resolve as resolvePath } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, resolve as resolvePath } from "node:path";
 
-const SOURCE_ROOT = resolvePath(process.cwd(), "src");
+// Resolved from this file's own location rather than from `process.cwd()`, so a process can be
+// started from anywhere — which the worker container does, and which a cwd-relative root would
+// turn into an unresolvable import at boot rather than an error at build time.
+const SOURCE_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 export async function resolve(specifier, context, next) {
   const candidates = specifier.startsWith("@/")

@@ -8,14 +8,16 @@
 # runtime in its image.
 #
 # Four stages. `deps` and `builder` carry the full toolchain and are discarded; `runner` is the
-# only stage that ships, and it contains a traced Node server, git, and the Docker CLI. There
-# is no daemon inside the container: the CLI talks to the host's daemon over a bind-mounted
-# socket, which is what lets a containerized DeployHub keep controlling host Docker.
+# only stage that ships, and it contains a traced Node server, the worker's sources, git, and the
+# Docker CLI. There is no daemon inside the container: the CLI talks to the host's daemon over a
+# bind-mounted socket, which is what lets a containerized DeployHub keep controlling host Docker.
 #
-# The full operational contract — bind mounts, network mode, and the security implications of
-# handing this container the Docker socket — is in `docs/docker.md`. The run command there is
-# part of the architecture, not a convenience: this image will not work correctly under default
-# bridge networking, for reasons that file explains.
+# One image, two containers — `deployhub-web` serves the dashboard and `deployhub-worker` runs
+# deployments. Ordinary bridge networking is enough for both, because the classic strategy (D12)
+# publishes every container on a fixed port and never asks a proxy to move.
+#
+# The full operational contract — bind mounts, the Docker socket, and the security implications
+# of handing this container that socket — is in `docs/docker.md`.
 
 # Concrete versions, never `latest`. Bumping either is a deliberate, reviewable edit.
 #
@@ -103,12 +105,11 @@ ENV NODE_ENV=production \
     PORT=3000
 
 # Next's standalone server binds `HOSTNAME`, and Docker sets that variable to the container id,
-# which is not a bindable address — so it has to be set explicitly. Loopback is the correct
-# value under the documented `--network host` model: the dashboard is reached through nginx on
-# the host, and binding it anywhere else would publish a deploy button on a public interface.
-# Override with `-e HOSTNAME=0.0.0.0` only under bridge networking with `-p`, which is a
-# development arrangement — see `docs/docker.md`.
-ENV HOSTNAME=127.0.0.1
+# which is not a bindable address — so it has to be set explicitly. `0.0.0.0` binds every
+# interface *inside the container*, which under the documented bridge-networking model is what
+# `-p 127.0.0.1:3000:3000` then confines to the host's loopback. Publishing, not binding, is what
+# decides exposure here — see `docs/docker.md`.
+ENV HOSTNAME=0.0.0.0
 
 # Set explicitly because Docker does not derive HOME from /etc/passwd for `USER`. buildx keeps
 # client state under it, and an unwritable HOME breaks `docker build`.
@@ -147,17 +148,30 @@ RUN mkdir -p /var/lib/deployhub /home/node/.docker \
 COPY --from=builder --chown=node:node /build/.next/standalone ./
 COPY --from=builder --chown=node:node /build/.next/static ./.next/static
 
+# The worker's tree, kept out of /app so it cannot collide with the traced sources Next places
+# there. The alias hook resolves `@/…` from its own location, so this runs from any directory.
+COPY --chown=node:node src /opt/deployhub/src
+COPY --chown=node:node scripts /opt/deployhub/scripts
+
 USER node
 
-# Metadata only, and ignored entirely under `--network host` — the server binds PORT on the
-# host directly. Declared because it is the port the application listens on and tooling reads it.
+# The port the dashboard listens on inside the container. The run command publishes it to the
+# host's loopback, so nginx can reach it and nothing else can.
 EXPOSE 3000
 
-# No HEALTHCHECK. The instruction to add one only if a real health endpoint already exists is
-# the right one, and this application has none: every route is a dashboard page behind the
-# session gate, and `/signin` proves that Next is serving without touching SQLite or Docker —
-# which is precisely the part worth knowing about. A probe that reports green while the
-# database is unreachable is worse than no probe. `docs/docker.md` records what a truthful
-# health endpoint would have to check.
+# No HEALTHCHECK. A container health check should say whether the application is healthy, and
+# this application has no endpoint that answers that: every route is a dashboard page behind the
+# session gate, and `/signin` proves Next is serving without touching SQLite or Docker — which
+# is precisely the part worth knowing about. A probe that reports green while the database is
+# unreachable is worse than no probe. `docs/docker.md` records what a truthful one would check.
 
+# Two processes run from this one image. The web server is the default; the worker overrides the
+# command. They are separate containers rather than a supervised pair because a deployment must
+# outlive the request that triggered it (D7), and because `--restart unless-stopped` can then
+# restart either one without touching the other.
+#
+# The worker runs the TypeScript sources directly under Node's type stripping — the same
+# mechanism `npm run deployhub` already uses. No bundler and no second build: the alternative was
+# a build step whose output would be a third copy of the code to keep in step. It needs no
+# `node_modules` at all, because everything it touches is either `@/…` source or a Node builtin.
 CMD ["node", "server.js"]
