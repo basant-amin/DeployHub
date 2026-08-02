@@ -17,7 +17,6 @@
 
 import {
   type ContainerId,
-  type ContainerName,
   type Duration,
   type ImageDigest,
   type ImageReference,
@@ -231,15 +230,6 @@ export class DockerContainerRuntime implements ContainerRuntime {
       }
     }
     return ok(snapshots);
-  }
-
-  async rename(id: ContainerId, name: ContainerName): Promise<Result<void>> {
-    const renamed = await this.docker(
-      ["rename", id, name],
-      DOCKER_TIMEOUT_MILLIS,
-      "DOCKER_UNAVAILABLE",
-    );
-    return renamed.ok ? ok(undefined) : renamed;
   }
 
   async stop(id: ContainerId, grace: Duration): Promise<Result<void>> {

@@ -130,9 +130,6 @@ export interface ContainerRuntime {
    */
   findForProject(project: Project): Promise<Result<readonly ContainerSnapshot[]>>;
 
-  /** Rename, so container names keep matching reality across a promotion. */
-  rename(id: ContainerId, name: ContainerName): Promise<Result<void>>;
-
   /** Stop, allowing `grace` for a clean shutdown before it is forced. */
   stop(id: ContainerId, grace: Duration): Promise<Result<void>>;
 

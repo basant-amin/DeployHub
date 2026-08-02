@@ -5,13 +5,24 @@
  * is written as a straight line, in the order of `docs/architecture/deployment-flow.md`,
  * because that is the form in which it can be read against the document it implements.
  *
+ * The strategy is **classic** (`docs/architecture/decisions.md` § D12): stop the previous
+ * container, remove it, start the new one under the same name and published port. It is the
+ * manual `docker stop` / `docker rm` / `docker run` sequence, automated. There is no
+ * candidate running alongside the old release and no traffic switch, because there is no
+ * reverse proxy to switch — the host's proxy points at a fixed port and never has to change.
+ *
+ * The consequence, stated plainly because everything else follows from it: **the deployment
+ * is exposed from the moment the new container starts.** A crash on boot is an outage, not a
+ * discarded image. That is the accepted cost of not redesigning a working production server,
+ * and it is why the compensation boundary sits at container start rather than at promotion.
+ *
  * There is no step-pipeline framework, and that is a deliberate narrowing of § D2. A
  * generic runner with per-step compensation earns its keep when steps are many and their
- * compensations vary. This flow has eleven steps and exactly **two** compensations —
- * discard the candidate, or put the previous release back — and which applies depends on
- * one fact: whether traffic has been switched. A reverse-unwinding stack would be a
- * mechanism built for a case that does not exist. Step *records* are kept, because the
- * domain and the timeline view are built on them.
+ * compensations vary. This flow has ten steps and exactly **two** compensations — fail
+ * without having displaced anything, or put the previous image back — and which applies
+ * depends on one fact: whether the previous container has been removed yet. A
+ * reverse-unwinding stack would be a mechanism built for a case that does not exist. Step
+ * *records* are kept, because the domain and the timeline view are built on them.
  *
  * Also absent, per MVP scope: retries, cancellation, and event publishing. A failure is
  * reported and the operator decides.
@@ -22,6 +33,7 @@
 
 import {
   type ContainerId,
+  type DeploymentId,
   type ErrorCode,
   type ImageDigest,
   type ProjectId,
@@ -58,7 +70,6 @@ import type {
   ProbeTarget,
   ProjectRepository,
   ReleaseRepository,
-  ReverseProxy,
   SecretProvider,
   WorkerId,
 } from "@/core/ports";
@@ -68,10 +79,10 @@ import {
   NO_TIME_ELAPSED,
   PROBE_TIMEOUT,
   STOP_GRACE,
-  deploymentContainerName,
   evaluateHealth,
   hasEnoughDisk,
   imagesToRemove,
+  projectContainerName,
 } from "../policies";
 
 export interface DeploymentEnginePorts {
@@ -83,7 +94,6 @@ export interface DeploymentEnginePorts {
   readonly lock: DeployLock;
   readonly git: GitClient;
   readonly containers: ContainerRuntime;
-  readonly proxy: ReverseProxy;
   readonly health: HealthProbe;
   readonly logs: DeploymentLogSink;
   readonly secrets: SecretProvider;
@@ -255,17 +265,39 @@ export class DeploymentEngine {
     }
     current = imaged.value;
 
-    // -- Step 6: start the candidate. No traffic on it yet.
+    // -- Step 6: replace the container. This is the step that changes what users see.
+    //
+    // Stop, remove, then run under the same name and published port. The previous release
+    // is gone from the first line of this block, which is why every failure from here on is
+    // a rollback rather than a bare failure.
     const starting = await this.apply(current, (d) => d.beginCandidateStart(this.now()));
     if (!starting.ok) {
       return starting;
     }
     current = starting.value;
 
-    const containerName = deploymentContainerName(project.slug, current.id);
+    const containerName = projectContainerName(project.slug);
     if (!containerName.ok) {
       return this.abandon(current, containerName.error, "start_candidate");
     }
+
+    if (baseline.value.kind === "existing") {
+      await this.system(current, "start_candidate", `stopping ${baseline.value.containerName}`);
+      const stopped = await this.ports.containers.stop(baseline.value.containerId, STOP_GRACE);
+      if (!stopped.ok) {
+        // Nothing has been displaced yet — the previous container is still there and still
+        // serving — so this is an ordinary failure, not a rollback.
+        return this.abandon(current, stopped.error, "start_candidate");
+      }
+
+      // Removal frees the name for the new container. From here the previous release is no
+      // longer running and the site is down until the replacement answers.
+      const removed = await this.ports.containers.remove(baseline.value.containerId);
+      if (!removed.ok) {
+        return this.rollback(current, removed.error, context, baseline.value, undefined);
+      }
+    }
+
     await this.system(current, "start_candidate", `starting ${containerName.value}`);
 
     const started = await this.ports.containers.startContainer({
@@ -278,21 +310,23 @@ export class DeploymentEngine {
       environment: context.environment,
     });
     if (!started.ok) {
-      return this.abandon(current, started.error, "start_candidate");
+      return this.rollback(current, started.error, context, baseline.value, undefined);
     }
 
     const candidate = started.value;
     const upstream = candidate.upstream;
     if (upstream === undefined || candidate.state.kind === "exited") {
-      return this.discard(
+      return this.rollback(
         current,
-        candidate.id,
         DeploymentError.of(
           "CONTAINER_START_FAILED",
           upstream === undefined
-            ? "the candidate started without a reachable address"
-            : "the candidate exited immediately after starting",
+            ? "the new container started without a reachable address"
+            : "the new container exited immediately after starting",
         ),
+        context,
+        baseline.value,
+        candidate.id,
       );
     }
 
@@ -302,7 +336,7 @@ export class DeploymentEngine {
       upstream: { host: upstream.host, port: upstream.port },
     });
     if (!candidateRecord.ok) {
-      return this.discard(current, candidate.id, candidateRecord.error);
+      return this.rollback(current, candidateRecord.error, context, baseline.value, candidate.id);
     }
     const withCandidate = await this.apply(current, (d) =>
       d.recordCandidateStarted(this.now(), candidateRecord.value),
@@ -312,7 +346,10 @@ export class DeploymentEngine {
     }
     current = withCandidate.value;
 
-    // -- Step 7: health check the candidate directly, before it can affect anyone.
+    // -- Step 7: health check the new container directly, at the port it is published on.
+    //
+    // It is already serving, so this is a detector rather than a gate: a failure here is an
+    // outage in progress, and the answer is to put the previous image back.
     const checking = await this.apply(current, (d) => d.beginHealthCheck(this.now()));
     if (!checking.ok) {
       return checking;
@@ -327,9 +364,8 @@ export class DeploymentEngine {
       watch: candidate.id,
     });
     if (!healthy.ok) {
-      // A discard, not a rollback: the previous release served every request throughout.
       await this.captureContainerLogs(current, candidate.id);
-      return this.discard(current, candidate.id, healthy.error);
+      return this.rollback(current, healthy.error, context, baseline.value, candidate.id);
     }
     const passed = await this.apply(current, (d) => d.recordHealthCheckPassed(this.now()));
     if (!passed.ok) {
@@ -337,21 +373,20 @@ export class DeploymentEngine {
     }
     current = passed.value;
 
-    // -- Step 8: promote. The only step that changes what users see.
+    // -- Step 8: verify through the public route.
+    //
+    // `promoting` no longer switches anything — the switch happened at step 6 when the new
+    // container took the published port. What remains is the half of promotion that still
+    // has work to do: proving the release is reachable the way a user reaches it, through
+    // the host's proxy and its TLS, rather than only on loopback. Invariant 4 still gates
+    // `succeeded` on this, so a container that is healthy but unreachable cannot be reported
+    // as deployed.
     const promoting = await this.apply(current, (d) => d.beginPromotion(this.now()));
     if (!promoting.ok) {
       return promoting;
     }
     current = promoting.value;
-    await this.system(current, "promote", `pointing ${config.route.toString()} at the candidate`);
-
-    const switched = await this.ports.proxy.pointRouteAt(config.route, upstream);
-    if (!switched.ok) {
-      return this.rollback(current, switched.error, context, baseline.value, candidate.id);
-    }
-
-    // -- Step 9: verify through the public route. Proves the routing, not just the app.
-    await this.system(current, "verify_route", "verifying the public route");
+    await this.system(current, "verify_route", `verifying ${config.route.toString()}`);
     const verified = await this.waitForHealth({
       target: { kind: "route", route: config.route },
       spec: config.healthCheck,
@@ -460,19 +495,21 @@ export class DeploymentEngine {
   /**
    * What is live right now, read from the host rather than from the record.
    *
-   * The proxy is authoritative about which container serves traffic, so the baseline is
-   * whichever container the route currently points at. If the route points somewhere no
-   * container answers for, the deployment stops: proceeding would mean building with no
-   * known-good state to return to.
+   * The container carrying this project's name **and** this platform's labels is the live
+   * release: with one container per project (D12), there is nothing else it could be. Under
+   * the superseded strategy this question needed the proxy, because several containers of one
+   * project could be running and only the proxy knew which was serving. That indirection is
+   * gone with the second container.
+   *
+   * The label check is not redundant with the name. A container someone started by hand under
+   * the same name would be adopted as a rollback target it cannot serve as — its image digest
+   * is not a release this platform can return to — so an unlabelled namesake is refused rather
+   * than trusted.
    */
   private async captureBaseline(project: Project): Promise<Result<Baseline>> {
-    const upstream = await this.ports.proxy.readUpstream(project.config.route);
-    if (!upstream.ok) {
-      return upstream;
-    }
-    const current = upstream.value;
-    if (current === undefined) {
-      return ok(Baselines.firstDeploy());
+    const name = projectContainerName(project.slug);
+    if (!name.ok) {
+      return name;
     }
 
     const containers = await this.ports.containers.findForProject(project);
@@ -480,18 +517,19 @@ export class DeploymentEngine {
       return containers;
     }
 
-    const live = containers.value.find(
-      (snapshot) =>
-        snapshot.upstream !== undefined &&
-        snapshot.upstream.host === current.host &&
-        snapshot.upstream.port === current.port,
-    );
+    // `findForProject` filters on this platform's project label, so anything it returns was
+    // started by DeployHub. A namesake started by hand simply is not in this list.
+    const live = containers.value.find((snapshot) => snapshot.name === name.value);
     if (live === undefined) {
+      return ok(Baselines.firstDeploy());
+    }
+
+    if (live.upstream === undefined) {
       return err(
         DeploymentError.of(
           "BASELINE_REQUIRED",
-          `The route points at ${current.host}:${current.port} but no container answers for it, so there is no rollback target`,
-          { details: { host: current.host, port: current.port } },
+          `The live container ${live.name} publishes no address, so there is no verifiable rollback target`,
+          { details: { container: live.name } },
         ),
       );
     }
@@ -502,7 +540,7 @@ export class DeploymentEngine {
       image: live.image,
       imageDigest: live.imageDigest,
       commitSha: live.commitSha,
-      upstream: { host: live.upstream?.host, port: live.upstream?.port },
+      upstream: { host: live.upstream.host, port: live.upstream.port },
     });
   }
 
@@ -583,10 +621,13 @@ export class DeploymentEngine {
   }
 
   /**
-   * Finalization: stop the previous container and prune old images.
+   * Finalization: prune old images.
    *
-   * Every failure here is a warning. The release is live and verified; refusing to call
-   * that a success because a prune failed would be wrong.
+   * The previous container was stopped and removed at step 6 — under this strategy it has to
+   * be, to free the name and the port — so nothing remains to tear down here.
+   *
+   * Every failure is a warning. The release is live and verified; refusing to call that a
+   * success because a prune failed would be wrong.
    */
   private async finalize(
     deployment: Deployment,
@@ -594,14 +635,6 @@ export class DeploymentEngine {
     baseline: Baseline,
   ): Promise<Deployment> {
     let current = deployment;
-
-    if (baseline.kind === "existing") {
-      await this.system(current, "finalize", "stopping the previous container");
-      const stopped = await this.ports.containers.stop(baseline.containerId, STOP_GRACE);
-      if (!stopped.ok) {
-        current = await this.warnQuietly(current, stopped.error, "finalize");
-      }
-    }
 
     const prunable = await this.prunableImages(context, baseline);
     if (prunable.length > 0) {
@@ -660,7 +693,12 @@ export class DeploymentEngine {
 
   // -- Failure paths --------------------------------------------------------
 
-  /** Fail before promotion, having started nothing on the host that needs undoing. */
+  /**
+   * Compensation one of two: fail, having displaced nothing.
+   *
+   * Applies to every failure up to and including the stop of the previous container, which
+   * is still running and still serving at that point. Nothing on the host needs undoing.
+   */
   private async abandon(
     deployment: Deployment,
     error: DeploymentError,
@@ -671,76 +709,115 @@ export class DeploymentEngine {
   }
 
   /**
-   * Compensation one of two: remove the candidate.
+   * Compensation two of two: put the previous image back.
    *
-   * Applies to every failure before promotion. Nothing was switched, so the previous
-   * release is still serving and there is nothing to restore.
-   */
-  private async discard(
-    deployment: Deployment,
-    candidateId: ContainerId,
-    error: DeploymentError,
-  ): Promise<Result<Deployment>> {
-    await this.system(deployment, "start_candidate", `discarding the candidate: ${error.message}`);
-    let current = deployment;
-    const removed = await this.ports.containers.remove(candidateId);
-    if (!removed.ok) {
-      current = await this.warnQuietly(current, removed.error, "start_candidate");
-    }
-    return this.apply(current, (d) => d.fail(this.now(), error));
-  }
-
-  /**
-   * Compensation two of two: put the previous release back.
+   * Applies to every failure from the removal of the previous container onward. Unlike the
+   * superseded strategy, where rollback was one proxy call against a container still running,
+   * this is a cold start under pressure: the site is down while it runs. That is the cost of
+   * the classic sequence, and it is why the previous **digest** is captured in the baseline —
+   * a tag could have been reassigned by the build that just failed, a digest could not.
    *
-   * The previous container is deliberately still running at this point, so this is one
-   * proxy change rather than a cold start under pressure. If it fails, the deployment ends
-   * in `rollback_failed`, which retains the lease and requires a human.
+   * `failedContainerId` is the new container when one was started, and `undefined` when the
+   * failure happened before or during its creation.
+   *
+   * If restoring fails the deployment ends in `rollback_failed`, which retains the lease and
+   * requires a human. That is the correct place to stop: the platform has established that it
+   * cannot return the host to a known-good state, and further automation would be guessing.
    */
   private async rollback(
     deployment: Deployment,
     cause: DeploymentError,
     context: RunContext,
     baseline: Baseline,
-    candidateId: ContainerId,
+    failedContainerId: ContainerId | undefined,
   ): Promise<Result<Deployment>> {
     const rollingBack = await this.apply(deployment, (d) => d.beginRollback(this.now(), cause));
     if (!rollingBack.ok) {
       return rollingBack;
     }
     const current = rollingBack.value;
-    await this.system(current, "promote", `rolling back: ${cause.message}`);
+    await this.system(current, "rollback", `rolling back: ${cause.message}`);
+
+    // Clear the way first: the previous image cannot take the name and port back while the
+    // failed container still holds them.
+    if (failedContainerId !== undefined) {
+      const removed = await this.ports.containers.remove(failedContainerId);
+      if (!removed.ok) {
+        return this.apply(current, (d) =>
+          d.failRollback(
+            this.now(),
+            DeploymentError.of(
+              "ROLLBACK_FAILED",
+              `Could not remove the failed container to make way for the previous release: ${removed.error.message}`,
+              { details: { cause: cause.code } },
+            ),
+          ),
+        );
+      }
+    }
 
     if (baseline.kind === "first_deploy") {
-      // Nothing to return to. Remove the candidate and leave the route unconfigured rather
-      // than pointing it at something that failed verification.
-      await this.ports.containers.remove(candidateId);
+      // Nothing to return to, and nothing was displaced — this project had no release. The
+      // host is back where it started.
       return this.apply(current, (d) => d.completeRollback(this.now()));
     }
 
-    const restored = await this.restoreBaseline(context, baseline);
+    const restored = await this.restoreBaseline(context, baseline, current.id);
     if (!restored.ok) {
       return this.apply(current, (d) =>
         d.failRollback(
           this.now(),
           DeploymentError.of(
             "ROLLBACK_FAILED",
-            `Could not point the route back at the previous release: ${restored.error.message}`,
+            `Could not restart the previous release: ${restored.error.message}`,
             { details: { cause: cause.code } },
           ),
         ),
       );
     }
 
-    await this.ports.containers.remove(candidateId);
+    await this.system(current, "rollback", `restored ${baseline.commitSha}`);
     return this.apply(current, (d) => d.completeRollback(this.now()));
   }
 
+  /**
+   * Start the previous release again, by digest, under the project's container name.
+   *
+   * Deliberately started from the recorded digest rather than by restarting the stopped
+   * container: the container was removed to free the name, and a digest is startable whether
+   * or not anything survived. It is the same call the forward path makes, which is what keeps
+   * the recovery path exercised by ordinary use rather than only by incidents.
+   *
+   * The restored container is labelled with the **rolling-back** deployment's id, because that
+   * is the deployment that started it. Its commit and digest labels still name the release it
+   * is running, which is what the next baseline capture reads.
+   */
   private async restoreBaseline(
     context: RunContext,
     baseline: ExistingBaseline,
+    restoredBy: DeploymentId,
   ): Promise<Result<void>> {
-    return this.ports.proxy.pointRouteAt(context.project.config.route, baseline.upstream);
+    const started = await this.ports.containers.startContainer({
+      project: context.project,
+      name: baseline.containerName,
+      image: baseline.image,
+      imageDigest: baseline.imageDigest,
+      commitSha: baseline.commitSha,
+      deploymentId: restoredBy,
+      environment: context.environment,
+    });
+    if (!started.ok) {
+      return started;
+    }
+    if (started.value.state.kind === "exited") {
+      return err(
+        DeploymentError.of(
+          "ROLLBACK_FAILED",
+          "the previous release exited immediately when restarted",
+        ),
+      );
+    }
+    return ok(undefined);
   }
 
   private async captureContainerLogs(deployment: Deployment, id: ContainerId): Promise<void> {

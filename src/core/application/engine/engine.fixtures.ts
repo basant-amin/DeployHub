@@ -2,9 +2,9 @@
  * In-memory ports, for testing the application layer.
  *
  * Not fakes in the sense of "returns a canned value" — these behave. The container runtime
- * remembers what it started and stopped, the proxy remembers where a route points, and the
- * lock refuses a second holder. That is what lets a test assert the thing that actually
- * matters after a failed deployment: *the previous release is still serving traffic*.
+ * remembers what it started, stopped, and removed, and the lock refuses a second holder. That
+ * is what lets a test assert the thing that actually matters after a failed deployment: *the
+ * previous release is running again*.
  *
  * Every one is scriptable, because the interesting deployments are the ones that go wrong.
  */
@@ -12,7 +12,6 @@
 import {
   type CommitSha,
   type ContainerId,
-  type ContainerName,
   type DeploymentId,
   type GitRef,
   type IdempotencyKey,
@@ -42,7 +41,6 @@ import {
   type Deployment,
   type Project,
   type ProxyUpstream,
-  type PublicRoute,
   type Release,
   ProxyUpstream as ProxyUpstreamCodec,
 } from "@/core/domain";
@@ -67,7 +65,6 @@ import type {
   ProbeRequest,
   ProjectRepository,
   ReleaseRepository,
-  ReverseProxy,
   SecretProvider,
   StorageHeadroom,
   WorkerId,
@@ -308,21 +305,31 @@ export class FakeGit implements GitClient {
   }
 }
 
-/** Tracks containers as a real host would: started, stopped, removed, renamed. */
+/** Tracks containers as a real host would: started, stopped, removed — and names taken. */
 export class FakeContainers implements ContainerRuntime {
   readonly containers = new Map<string, ContainerSnapshot>();
   readonly removedImages: ImageDigest[] = [];
   readonly stopped: string[] = [];
   readonly removed: string[] = [];
+  /** Every start, in order, so a test can assert what the restore actually ran. */
+  readonly started: ContainerStartRequest[] = [];
   private nextPort = 4001;
   private nextId = 1;
 
   buildFailure: DeploymentError | undefined;
   startFailure: DeploymentError | undefined;
+  /** Fails only the Nth start, so a restore can fail where the first start succeeded. */
+  failStartNumber: number | undefined;
   removeFailure: DeploymentError | undefined;
   stopFailure: DeploymentError | undefined;
-  /** State the next started container reports. */
-  startedState: ContainerState = { kind: "running" };
+  /**
+   * State the *next* started container reports, consumed on use.
+   *
+   * One-shot rather than sticky because the scenario it exists for is "the new image is
+   * broken": a sticky value would also break the previous release when the rollback
+   * restarts it, which is a different failure and would hide the one under test.
+   */
+  nextStartedState: ContainerState | undefined;
   /** Applied to a container on the Nth inspect, to simulate a crash mid-probe. */
   exitAfterInspects: number | undefined;
   private inspects = 0;
@@ -365,19 +372,38 @@ export class FakeContainers implements ContainerRuntime {
   }
 
   async startContainer(request: ContainerStartRequest): Promise<Result<ContainerSnapshot>> {
-    if (this.startFailure !== undefined) {
-      return err(this.startFailure);
+    this.started.push(request);
+    if (this.startFailure !== undefined || this.failStartNumber === this.started.length) {
+      return err(
+        this.startFailure ??
+          DeploymentError.of("CONTAINER_START_FAILED", "the daemon refused to start the container"),
+      );
+    }
+    // A real daemon refuses a name that is already taken. The classic strategy depends on
+    // removing the previous container first, and a fake that silently allows a duplicate
+    // would let a broken ordering pass.
+    for (const existing of this.containers.values()) {
+      if (existing.name === request.name) {
+        return err(
+          DeploymentError.of(
+            "CONTAINER_START_FAILED",
+            `the container name "${request.name}" is already in use`,
+          ),
+        );
+      }
     }
     this.nextId += 1;
+    const state: ContainerState = this.nextStartedState ?? { kind: "running" };
+    this.nextStartedState = undefined;
     const snapshot: ContainerSnapshot = {
       id: unwrapOrThrow(ContainerIdCodec.parse(String(this.nextId).repeat(12).slice(0, 12))),
       name: request.name,
-      state: this.startedState,
+      state,
       image: request.image,
       imageDigest: request.imageDigest,
       commitSha: request.commitSha,
       deploymentId: request.deploymentId,
-      upstream: this.startedState.kind === "exited" ? undefined : upstreamAt(this.nextPort++),
+      upstream: state.kind === "exited" ? undefined : upstreamAt(this.nextPort++),
     };
     this.containers.set(snapshot.id, snapshot);
     return ok(snapshot);
@@ -399,14 +425,6 @@ export class FakeContainers implements ContainerRuntime {
 
   async findForProject(): Promise<Result<readonly ContainerSnapshot[]>> {
     return ok([...this.containers.values()]);
-  }
-
-  async rename(id: ContainerId, name: ContainerName): Promise<Result<void>> {
-    const snapshot = this.containers.get(id);
-    if (snapshot !== undefined) {
-      this.containers.set(id, { ...snapshot, name });
-    }
-    return ok(undefined);
   }
 
   async stop(id: ContainerId): Promise<Result<void>> {
@@ -444,40 +462,6 @@ export class FakeContainers implements ContainerRuntime {
       return err(this.headroomFailure);
     }
     return ok({ freeBytes: this.freeBytes, totalBytes: 100 * 1024 * 1024 * 1024 });
-  }
-}
-
-export class FakeProxy implements ReverseProxy {
-  private upstream: ProxyUpstream | undefined;
-  readonly switches: (ProxyUpstream | undefined)[] = [];
-  switchFailure: DeploymentError | undefined;
-  /** Fails only the Nth switch, so a rollback can fail while the promotion succeeded. */
-  failSwitchNumber: number | undefined;
-
-  pointAt(upstream: ProxyUpstream | undefined): void {
-    this.upstream = upstream;
-  }
-
-  async readUpstream(_route: PublicRoute): Promise<Result<ProxyUpstream | undefined>> {
-    return ok(this.upstream);
-  }
-
-  async pointRouteAt(_route: PublicRoute, upstream: ProxyUpstream): Promise<Result<void>> {
-    const attempt = this.switches.length + 1;
-    if (this.switchFailure !== undefined || this.failSwitchNumber === attempt) {
-      this.switches.push(undefined);
-      return err(
-        this.switchFailure ??
-          DeploymentError.of("PROXY_RELOAD_FAILED", "the proxy refused the change"),
-      );
-    }
-    this.upstream = upstream;
-    this.switches.push(upstream);
-    return ok(undefined);
-  }
-
-  get current(): ProxyUpstream | undefined {
-    return this.upstream;
   }
 }
 
@@ -583,7 +567,6 @@ export interface TestWorld {
   readonly lock: FakeLock;
   readonly git: FakeGit;
   readonly containers: FakeContainers;
-  readonly proxy: FakeProxy;
   readonly health: FakeHealth;
   readonly logs: FakeLogs;
   readonly secrets: FakeSecrets;
@@ -599,7 +582,6 @@ export function makeWorld(): TestWorld {
   const lock = new FakeLock();
   const git = new FakeGit();
   const containers = new FakeContainers();
-  const proxy = new FakeProxy();
   const health = new FakeHealth();
   const logs = new FakeLogs();
   const secrets = new FakeSecrets();
@@ -614,7 +596,6 @@ export function makeWorld(): TestWorld {
       lock,
       git,
       containers,
-      proxy,
       health,
       logs,
       secrets,
@@ -631,7 +612,6 @@ export function makeWorld(): TestWorld {
     lock,
     git,
     containers,
-    proxy,
     health,
     logs,
     secrets,

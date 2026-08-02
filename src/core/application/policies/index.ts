@@ -6,7 +6,7 @@ export { NO_TIME_ELAPSED, evaluateHealth } from "./health-policy";
 export type { RetentionInput } from "./retention-policy";
 export { imagesToRemove } from "./retention-policy";
 
-export { deploymentContainerName } from "./container-naming";
+export { projectContainerName } from "./container-naming";
 
 export {
   CAPTURED_LOG_LINES,

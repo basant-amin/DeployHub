@@ -5,10 +5,10 @@ import { unwrapOrThrow } from "@/core/shared";
 import { Duration } from "@/core/shared";
 import { expectOk } from "@/core/shared/result.testing";
 import { HealthCheckSpec, ImageRetention } from "@/core/domain";
-import { driveTo, makeProject, releaseFrom } from "@/core/domain/deployments/deployment.fixtures";
+import { makeProject, releaseFrom } from "@/core/domain/deployments/deployment.fixtures";
 import type { ProbeOutcome } from "@/core/ports";
 
-import { deploymentContainerName } from "./container-naming";
+import { projectContainerName } from "./container-naming";
 import { evaluateHealth } from "./health-policy";
 import { imagesToRemove } from "./retention-policy";
 import { MINIMUM_FREE_DISK_BYTES, hasEnoughDisk } from "./thresholds";
@@ -173,12 +173,17 @@ describe("imagesToRemove", () => {
   });
 });
 
-describe("deploymentContainerName", () => {
-  it("is unique per deployment, so two can be on the host at once", () => {
+describe("projectContainerName", () => {
+  it("is the slug, so it is stable across deployments and typeable by an operator", () => {
     const project = makeProject();
-    const first = expectOk(deploymentContainerName(project.slug, driveTo("queued").id));
-    expect(first).toContain("one-community");
-    expect(first).toContain(driveTo("queued").id);
+    expect(expectOk(projectContainerName(project.slug))).toBe("one-community");
+  });
+
+  it("is the same name every time, which is what lets a deployment replace its predecessor", () => {
+    const project = makeProject();
+    expect(expectOk(projectContainerName(project.slug))).toBe(
+      expectOk(projectContainerName(project.slug)),
+    );
   });
 });
 

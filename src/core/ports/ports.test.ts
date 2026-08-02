@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   type ContainerId,
-  type ContainerName,
   type DeploymentId,
   type ImageDigest,
   type ProjectId,
@@ -172,7 +171,6 @@ describe("every port is implementable with domain types", () => {
       startContainer: async () => ok(snapshot),
       inspect: async (id: ContainerId) => ok(id === snapshot.id ? snapshot : undefined),
       findForProject: async () => ok([snapshot]),
-      rename: async (_id: ContainerId, _name: ContainerName) => ok(undefined),
       stop: async (_id: ContainerId, _grace: Duration) => ok(undefined),
       remove: async () => ok(undefined),
       readLogs: async () => ok(["listening on 3000"]),

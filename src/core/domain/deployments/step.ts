@@ -1,7 +1,7 @@
 /**
  * Per-step records.
  *
- * The eleven steps of `docs/architecture/deployment-flow.md`, and what happened in
+ * The steps of `docs/architecture/deployment-flow.md`, and what happened in
  * each. A record is a discriminated union on `status`, so "finished" and "has a
  * finish time" cannot disagree: a running step has no `finishedAt` field to be
  * wrong, and a failed step cannot exist without an error.
@@ -22,6 +22,10 @@ export const STEP_NAMES = [
   "health_check",
   "promote",
   "verify_route",
+  // Restoring the previous release has its own group because it is the output a reader
+  // most needs to find when a deployment goes wrong, and burying it in `start_candidate`
+  // would mix "we tried to start this" with "we put the old one back".
+  "rollback",
   "finalize",
   "release_lock",
 ] as const;
