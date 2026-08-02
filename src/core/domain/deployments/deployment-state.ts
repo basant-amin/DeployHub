@@ -57,10 +57,32 @@ export const TRANSITIONS: Readonly<Record<DeploymentState, readonly DeploymentSt
       "interrupted",
     ] as const),
     building: Object.freeze(["starting", "failed", "canceled", "interrupted"] as const),
-    starting: Object.freeze(["health_checking", "failed", "canceled", "interrupted"] as const),
-    health_checking: Object.freeze(["promoting", "failed", "canceled", "interrupted"] as const),
-    // No path to `failed`: once traffic has been switched, the failure response is a
-    // rollback, not a bare failure.
+    // `rolling_back` is reachable from here because the classic strategy stops and removes
+    // the previous container *before* starting the new one (D12). From this state onward the
+    // previous release is already gone, so a failure is an outage rather than a non-event, and
+    // the compensating action is to put the previous image back. `failed` remains reachable
+    // for the case where nothing was displaced: a first deployment has nothing to restore.
+    starting: Object.freeze([
+      "health_checking",
+      "rolling_back",
+      "failed",
+      "canceled",
+      "interrupted",
+    ] as const),
+    // `rolling_back` for the same reason as `starting`: the container being probed here is
+    // already serving traffic, so a health check that fails is reporting an outage in
+    // progress. Under the superseded candidate-then-promote strategy this state was safe —
+    // the candidate was unreachable and a failure cost nothing — which is why the boundary
+    // moved when the strategy did.
+    health_checking: Object.freeze([
+      "promoting",
+      "rolling_back",
+      "failed",
+      "canceled",
+      "interrupted",
+    ] as const),
+    // No path to `failed`: traffic is already on the new release, so the failure response is
+    // a rollback, not a bare failure.
     promoting: Object.freeze(["finalizing", "rolling_back", "interrupted"] as const),
     // No path to `failed`: the release is live and verified, so a finalization
     // problem is recorded as a warning (see `docs/architecture/deployment-engine.md`

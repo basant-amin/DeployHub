@@ -567,7 +567,12 @@ export class Deployment {
   }
 
   /**
-   * `promoting` → `rolling_back`. The one place automatic rollback begins.
+   * `starting` | `health_checking` | `promoting` → `rolling_back`. The one place
+   * automatic rollback begins.
+   *
+   * Reachable from three states rather than one because the classic strategy displaces
+   * the previous container before the new one starts (D12): from `starting` onward there
+   * is an outage to compensate for, not merely a candidate to discard.
    *
    * `error` is the failure that triggered it — kept so the timeline explains *why*
    * the platform rolled back, not merely that it did.

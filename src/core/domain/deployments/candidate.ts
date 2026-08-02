@@ -1,13 +1,19 @@
 /**
- * `CandidateContainer` — the new container, running but not yet serving traffic.
+ * `CandidateContainer` — the new container this deployment started.
  *
- * The candidate is what makes most deployment failures non-events: it is built,
- * started, and health-checked while the previous container keeps serving every
- * request, so a failed build or a crash on boot costs a discarded image rather than
- * an outage (`docs/architecture/decisions.md` § D8).
+ * Under the classic strategy (`docs/architecture/decisions.md` § D12) it is a candidate
+ * only in the sense that it has not yet proved itself: it takes the previous container's
+ * name and published port, so it is serving traffic from the moment it starts, and a crash
+ * on boot is an outage rather than a discarded image. That is the accepted cost of matching
+ * the manual `docker stop`/`docker run` workflow, and it is why a health check failure now
+ * triggers a rollback instead of a bare failure.
  *
- * Its upstream is an internal address, unreachable from outside, until promotion
- * points the public route at it.
+ * The name is kept from the superseded candidate-then-promote design (D8) rather than
+ * renamed: it is a field in the persisted deployment snapshot, and renaming it would be a
+ * storage migration in exchange for a better word.
+ *
+ * Its upstream is the address the container is published on, which is what the health probe
+ * targets.
  */
 
 import {

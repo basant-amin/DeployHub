@@ -9,8 +9,9 @@
  *
  * The image **digest** is recorded alongside the tag deliberately. A tag can be
  * reassigned, so returning to "the previous image tag" can silently mean a different
- * image; a digest cannot. It is also what makes the worst recovery case survivable —
- * if the previous container was destroyed, the previous release is still startable.
+ * image; a digest cannot. Under the classic strategy (D12) that is no longer a
+ * worst-case safeguard but the ordinary rollback path: the previous container is
+ * removed on every deployment, so the digest is the only thing left to restore it from.
  */
 
 import {
@@ -29,7 +30,7 @@ import {
   ok,
 } from "@/core/shared";
 
-/** Where the reverse proxy sends traffic for a route. */
+/** The address a container is published on, and therefore the address it is probed at. */
 export class ProxyUpstream {
   private constructor(
     readonly host: Hostname,

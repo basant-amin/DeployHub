@@ -313,10 +313,26 @@ describe("rollback after a failed promotion", () => {
     expect(stuck.error).toBeDefined();
   });
 
-  it("is unreachable before promotion", () => {
-    expect(
-      expectErr(driveTo("health_checking").beginRollback(at(80), rollbackTrigger())).code,
-    ).toBe("ILLEGAL_STATE_TRANSITION");
+  // The classic strategy displaces the previous container before starting the new one, so
+  // from `starting` onward there is an outage to compensate for rather than a candidate to
+  // discard. These two states are the boundary that moved when the strategy did (D12).
+  it("is reachable from starting, once the previous container has been displaced", () => {
+    const rollingBack = expectOk(driveTo("starting").beginRollback(at(80), rollbackTrigger()));
+    expect(rollingBack.state).toBe("rolling_back");
+    expect(rollingBack.error).toBeDefined();
+  });
+
+  it("is reachable from health_checking, where the container probed is already serving", () => {
+    const rollingBack = expectOk(
+      driveTo("health_checking").beginRollback(at(80), rollbackTrigger()),
+    );
+    expect(rollingBack.state).toBe("rolling_back");
+  });
+
+  it("is unreachable before a container has been started", () => {
+    expect(expectErr(driveTo("building").beginRollback(at(80), rollbackTrigger())).code).toBe(
+      "ILLEGAL_STATE_TRANSITION",
+    );
   });
 });
 
