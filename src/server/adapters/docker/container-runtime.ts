@@ -57,7 +57,12 @@ const BUILD_TIMEOUT_MILLIS = 1_800_000;
 const DOCKER_TIMEOUT_MILLIS = 120_000;
 
 export interface DockerAdapterOptions extends WorkspaceLayout {
-  /** The address a container is published on, and therefore probed at. */
+  /**
+   * The address containers are published on, and therefore probed at.
+   *
+   * `127.0.0.1` for loopback-only, which is the safer default; `0.0.0.0` to match an
+   * existing `-p <port>:<port>` deployment exactly.
+   */
   readonly bindHost: string;
   /** Filesystem whose free space is reported. Docker's data root on the target. */
   readonly storagePath: string;
@@ -153,10 +158,17 @@ export class DockerContainerRuntime implements ContainerRuntime {
     for (const [name, value] of [...request.environment].sort(([a], [b]) => a.localeCompare(b))) {
       args.push("--env", `${name}=${value}`);
     }
-    // Empty host port: Docker allocates, and only loopback is bound.
+    // A fixed host port, matching the container port. Under the classic strategy the
+    // previous container has already been removed, so the port is free — and a fixed port
+    // is the point: the host's proxy keeps one static upstream and is never reconfigured.
+    //
+    // `bindHost` decides who can reach it. `127.0.0.1` publishes to loopback only, so the
+    // application is reachable exactly through the host's proxy; `0.0.0.0` reproduces a
+    // plain `-p <port>:<port>` for an existing deployment being adopted unchanged.
+    const port = request.project.config.containerPort;
     args.push(
       "--publish",
-      `${this.options.bindHost}::${request.project.config.containerPort}`,
+      `${this.options.bindHost}:${port}:${port}`,
       // Run the digest, not the tag: a tag can be reassigned, a digest cannot, and this is
       // what lets recovery restart a previous release whose container was destroyed.
       request.imageDigest,
@@ -373,6 +385,18 @@ export class DockerContainerRuntime implements ContainerRuntime {
     });
   }
 
+  /**
+   * The address the container can be **reached** at, read back from the daemon.
+   *
+   * Read back rather than assumed: the request says what to publish, and this says what was
+   * actually published, which is the difference between believing a container is reachable
+   * and knowing it.
+   *
+   * `0.0.0.0` is a bind address, not a destination. A container published to every interface
+   * is reported at loopback, because that is where this process should probe it — the health
+   * check asks "is it answering on this host", and loopback answers that without depending on
+   * which external address the machine happens to have.
+   */
   private toUpstream(inspected: DockerInspect): ProxyUpstream | undefined {
     const ports = inspected.NetworkSettings?.Ports ?? {};
     for (const bindings of Object.values(ports)) {
@@ -380,8 +404,9 @@ export class DockerContainerRuntime implements ContainerRuntime {
       if (binding?.HostPort === undefined) {
         continue;
       }
+      const bound = binding.HostIp ?? this.options.bindHost;
       const upstream = ProxyUpstream.create({
-        host: this.options.bindHost,
+        host: bound === "" || bound === "0.0.0.0" || bound === "::" ? "127.0.0.1" : bound,
         port: Number(binding.HostPort),
       });
       if (upstream.ok) {
