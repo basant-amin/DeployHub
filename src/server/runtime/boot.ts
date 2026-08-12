@@ -9,7 +9,7 @@
  */
 
 import { runtimeConfigFromEnv } from "./composition";
-import { checkRuntime, dockerSocketFromEnv, formatProblems } from "./startup-check";
+import { checkRuntime, dockerSocketFromEnv, formatProblems, hintFor } from "./startup-check";
 
 /**
  * Verify the host and terminate the process if it is not usable.
@@ -21,13 +21,16 @@ import { checkRuntime, dockerSocketFromEnv, formatProblems } from "./startup-che
  * host — and what makes the problem visible in `docker ps` rather than only in a browser.
  */
 export function abortUnlessRuntimeReady(): void {
-  const problems = checkRuntime(runtimeConfigFromEnv(), {
-    dockerSocket: dockerSocketFromEnv(),
-  });
+  const config = runtimeConfigFromEnv();
+  const options = { dockerSocket: dockerSocketFromEnv() };
+
+  const problems = checkRuntime(config, options);
   if (problems.length === 0) {
     return;
   }
 
-  console.error(formatProblems(problems));
+  // The same refusal on every host; only the suggested repair differs. `npm run dev` reaches this
+  // exactly as the container does, which is why the guard is worth trusting.
+  console.error(formatProblems(problems, hintFor(config, options)));
   process.exit(1);
 }

@@ -16,6 +16,10 @@ next-env.d.ts
 # Testing
 /coverage
 
+# Local runtime state, if a developer points DEPLOYHUB_ROOT inside the working tree.
+# The default is ~/.deployhub-dev, outside it — see src/server/runtime/dev-root.ts.
+/.deployhub-dev/
+
 # Environment variables
 .env
 .env.local

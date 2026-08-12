@@ -40,26 +40,46 @@ they would attach to are identified in the overview.
 ```bash
 nvm use              # switch to Node 24
 npm install
-cp .env.example .env.local   # then fill in values
 npm run dev          # http://localhost:3000
 ```
 
-Environment variables are validated at startup by
-[`src/config/env.ts`](./src/config/env.ts); the app refuses to boot on invalid
-configuration.
+`npm run dev` is a first-class mode and needs no manual setup: `predev` runs
+[`npm run dev:prepare`](./scripts/dev-prepare.ts), which creates a
+developer-owned runtime root at `~/.deployhub-dev` — the SQLite database, the
+project workspaces, and a `0600` `secrets.json` — and writes a `.env.local`
+recording that path with a generated local password. It needs no `sudo`, touches
+nothing under `/var`, and is idempotent, so re-running it changes nothing.
+
+**Do not run `docs/ops/install.sh` on a development machine.** It prepares a
+server's `/var/lib/deployhub` and assigns it to uid 1000, which is not your uid;
+the startup check would then refuse to boot on an unreadable secrets file.
+
+DeployHub validates the host before serving — data root and workspace writable,
+`secrets.json` present at `0600` and owned by this uid, Docker socket reachable —
+in the dev server and in the production containers alike
+([`src/server/runtime/startup-check.ts`](./src/server/runtime/startup-check.ts)).
+It exits rather than start into a state that will fail at the first deployment,
+and the same check running locally is what makes it trustworthy in production.
+Every problem it reports carries the command that fixes it.
+
+`.env.local` is git-ignored and excluded from the Docker build context.
+[`.env.example`](./.env.example) documents every variable; production reads
+`/etc/deployhub/deployhub.env` on the server instead, and is not configured from
+this repository.
 
 ## Scripts
 
-| Script               | Description                   |
-| -------------------- | ----------------------------- |
-| `npm run dev`        | Start the Next.js dev server  |
-| `npm run build`      | Production build              |
-| `npm run start`      | Serve the production build    |
-| `npm run lint`       | ESLint (flat config)          |
-| `npm run typecheck`  | `tsc --noEmit` (strict)       |
-| `npm run test`       | Run the Vitest suite once     |
-| `npm run test:watch` | Vitest in watch mode          |
-| `npm run format`     | Format the repo with Prettier |
+| Script                | Description                                                                       |
+| --------------------- | --------------------------------------------------------------------------------- |
+| `npm run dev`         | Start the Next.js dev server                                                      |
+| `npm run dev:prepare` | Prepare the local runtime root and `.env.local` (runs automatically before `dev`) |
+| `npm run build`       | Production build                                                                  |
+| `npm run start`       | Serve the production build                                                        |
+| `npm run lint`        | ESLint (flat config)                                                              |
+| `npm run typecheck`   | `tsc --noEmit` (strict)                                                           |
+| `npm run test`        | Run the Vitest suite once                                                         |
+| `npm run test:watch`  | Vitest in watch mode                                                              |
+| `npm run format`      | Format the repo with Prettier                                                     |
 
 ## Tech stack
 

@@ -22,7 +22,8 @@
 
 import { constants, existsSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, sep } from "node:path";
 import { accessSync } from "node:fs";
 
 import type { RuntimeConfig } from "./composition";
@@ -32,6 +33,38 @@ export const DEFAULT_DOCKER_SOCKET = "/var/run/docker.sock";
 
 /** How long to wait for the daemon to accept a connection before calling it unreachable. */
 const SOCKET_TIMEOUT_MILLIS = 2_000;
+
+/**
+ * Who prepares this host, and therefore which command to suggest.
+ *
+ * The *check* is identical either way — that is not negotiable, since a guard that is relaxed on
+ * the machine where the code is written has never been exercised. Only the repair instructions
+ * differ, and they have to: `sudo docs/ops/install.sh` on a developer's Mac creates a data root
+ * owned by uid 1000, which the very next boot rejects as unreadable. Advice that produces a
+ * different problem is worse than no advice.
+ */
+export type HostKind = "system" | "developer";
+
+const INSTALLER_HINT = "The installer does all of this: sudo docs/ops/install.sh";
+const DEVELOPER_HINT = "Local development prepares all of this: npm run dev:prepare";
+
+/**
+ * A root under the home directory is a developer's; anything else belongs to the installer.
+ *
+ * Chosen over matching `/var`-like prefixes because the interesting paths are not reliably
+ * distinguishable that way — macOS puts temporary directories under `/var/folders` — while
+ * "inside the home directory" is exactly the property that makes a root developer-owned.
+ */
+export function hostKindOf(dataRoot: string, home: string = homedir()): HostKind {
+  return dataRoot === home || dataRoot.startsWith(`${home}${sep}`) ? "developer" : "system";
+}
+
+/** The closing line of a problem report: the one command that fixes the whole list. */
+export function hintFor(config: RuntimeConfig, options: StartupCheckOptions = {}): string {
+  return hostKindOf(dirname(config.databasePath), options.home) === "developer"
+    ? DEVELOPER_HINT
+    : INSTALLER_HINT;
+}
 
 export interface RuntimeProblem {
   /** What is wrong, in terms of the host rather than the driver's errno. */
@@ -48,6 +81,11 @@ export interface StartupCheckOptions {
   readonly dockerSocket?: string | undefined;
   /** The uid the process runs as. Injected so the ownership rule is testable. */
   readonly uid?: number | undefined;
+  /**
+   * The home directory that decides whether this is a developer's host or a server's. Injected so
+   * the rule is testable without depending on where the test runner's temp directory lands.
+   */
+  readonly home?: string | undefined;
 }
 
 export class StartupCheckError extends Error {
@@ -63,17 +101,14 @@ export class StartupCheckError extends Error {
  * Exported because the two entrypoints print it differently — the worker to stderr before
  * exiting, Next through its own error handling — and both need the same text.
  */
-export function formatProblems(problems: readonly RuntimeProblem[]): string {
+export function formatProblems(
+  problems: readonly RuntimeProblem[],
+  hint: string = INSTALLER_HINT,
+): string {
   const lines = problems.map((problem, index) => {
     return `  ${index + 1}. ${problem.what}\n     fix: ${problem.fix}`;
   });
-  return [
-    "DeployHub cannot start. The host is not prepared:",
-    "",
-    ...lines,
-    "",
-    "The installer does all of this: sudo docs/ops/install.sh",
-  ].join("\n");
+  return ["DeployHub cannot start. The host is not prepared:", "", ...lines, "", hint].join("\n");
 }
 
 /**
@@ -89,18 +124,19 @@ export function checkRuntime(
   const problems: RuntimeProblem[] = [];
   const uid = options.uid ?? process.getuid?.() ?? 0;
   const dataRoot = dirname(config.databasePath);
+  const kind = hostKindOf(dataRoot, options.home);
 
-  problems.push(...checkWritableDirectory(dataRoot, "The data root"));
+  problems.push(...checkWritableDirectory(dataRoot, "The data root", kind));
 
   // Checked separately because it is usually inside the data root but does not have to be, and
   // because git creates checkouts here — a readable-but-not-writable workspace fails at the
   // fetch step of the first deployment rather than at boot.
   if (config.workspaceRoot !== dataRoot) {
-    problems.push(...checkWritableDirectory(config.workspaceRoot, "The workspace root"));
+    problems.push(...checkWritableDirectory(config.workspaceRoot, "The workspace root", kind));
   }
 
-  problems.push(...checkSecretsFile(config.secretsPath, uid));
-  problems.push(...checkDockerSocket(options.dockerSocket));
+  problems.push(...checkSecretsFile(config.secretsPath, uid, kind));
+  problems.push(...checkDockerSocket(options.dockerSocket, kind));
 
   return problems;
 }
@@ -113,15 +149,25 @@ export function assertRuntimeReady(config: RuntimeConfig, options: StartupCheckO
   }
 }
 
-function checkWritableDirectory(path: string, label: string): readonly RuntimeProblem[] {
+function checkWritableDirectory(
+  path: string,
+  label: string,
+  kind: HostKind,
+): readonly RuntimeProblem[] {
   let info;
   try {
     info = statSync(path);
   } catch {
     return [
       {
-        what: `${label} ${path} does not exist. Docker creates a missing bind-mount source as root, so this usually means the container was started before the host was prepared.`,
-        fix: `sudo docs/ops/install.sh --root ${rootOf(path)}`,
+        what:
+          kind === "developer"
+            ? `${label} ${path} does not exist. Local development keeps its runtime state outside the working tree, so it is created once rather than by cloning.`
+            : `${label} ${path} does not exist. Docker creates a missing bind-mount source as root, so this usually means the container was started before the host was prepared.`,
+        fix:
+          kind === "developer"
+            ? "npm run dev:prepare"
+            : `sudo docs/ops/install.sh --root ${rootOf(path)}`,
       },
     ];
   }
@@ -143,10 +189,14 @@ function checkWritableDirectory(path: string, label: string): readonly RuntimePr
     unlinkSync(probe);
   } catch (cause) {
     const owner = describeOwner(info);
+    const self = process.getuid?.() ?? 0;
     return [
       {
         what: `${label} ${path} is not writable by uid ${process.getuid?.() ?? "?"} (${owner}): ${messageOf(cause)}`,
-        fix: `sudo chown 1000:1000 ${path} && sudo chmod 750 ${path}`,
+        fix:
+          kind === "developer"
+            ? `chown ${self}:$(id -g) ${path} && chmod 700 ${path}`
+            : `sudo chown 1000:1000 ${path} && sudo chmod 750 ${path}`,
       },
     ];
   }
@@ -154,7 +204,7 @@ function checkWritableDirectory(path: string, label: string): readonly RuntimePr
   return [];
 }
 
-function checkSecretsFile(path: string, uid: number): readonly RuntimeProblem[] {
+function checkSecretsFile(path: string, uid: number, kind: HostKind): readonly RuntimeProblem[] {
   let info;
   try {
     info = statSync(path);
@@ -162,7 +212,10 @@ function checkSecretsFile(path: string, uid: number): readonly RuntimeProblem[] 
     return [
       {
         what: `The secrets file ${path} does not exist. It is read on every deployment and there is no write path, so the platform cannot create it.`,
-        fix: `sudo install -o 1000 -g 1000 -m 600 /dev/null ${path} && echo '{}' | sudo tee ${path} > /dev/null`,
+        fix:
+          kind === "developer"
+            ? "npm run dev:prepare"
+            : `sudo install -o 1000 -g 1000 -m 600 /dev/null ${path} && echo '{}' | sudo tee ${path} > /dev/null`,
       },
     ];
   }
@@ -180,18 +233,22 @@ function checkSecretsFile(path: string, uid: number): readonly RuntimeProblem[] 
 
   // The same rule `FileSecretProvider` enforces, checked here so it fails at boot rather than
   // at the first deployment. A secret file any group or other can read is not a secret file.
+  // No `sudo` in the developer form: these paths are inside the home directory, and a suggestion
+  // to sudo-chown something you already own teaches the wrong reflex.
+  const sudo = kind === "developer" ? "" : "sudo ";
+
   const mode = info.mode & 0o777;
   if ((mode & 0o077) !== 0) {
     problems.push({
       what: `The secrets file ${path} is mode ${mode.toString(8)}; it must be 600 so only its owner can read it.`,
-      fix: `sudo chmod 600 ${path}`,
+      fix: `${sudo}chmod 600 ${path}`,
     });
   }
 
   if (info.uid !== uid) {
     problems.push({
       what: `The secrets file ${path} is owned by uid ${info.uid}, but this process runs as uid ${uid}. At mode 600 that makes it unreadable.`,
-      fix: `sudo chown ${uid}:${uid} ${path}`,
+      fix: `${sudo}chown ${uid}:${uid} ${path}`,
     });
   }
 
@@ -200,7 +257,7 @@ function checkSecretsFile(path: string, uid: number): readonly RuntimeProblem[] 
   } catch (cause) {
     problems.push({
       what: `The secrets file ${path} cannot be read: ${messageOf(cause)}`,
-      fix: `sudo chown ${uid}:${uid} ${path} && sudo chmod 600 ${path}`,
+      fix: `${sudo}chown ${uid}:${uid} ${path} && ${sudo}chmod 600 ${path}`,
     });
   }
 
@@ -215,7 +272,10 @@ function checkSecretsFile(path: string, uid: number): readonly RuntimeProblem[] 
  * means it was, but this uid is not in the host's `docker` group — which is the single most
  * likely thing to be wrong on a first install, and the least obvious from any later error.
  */
-function checkDockerSocket(socketPath: string | undefined): readonly RuntimeProblem[] {
+function checkDockerSocket(
+  socketPath: string | undefined,
+  kind: HostKind,
+): readonly RuntimeProblem[] {
   if (socketPath === undefined) {
     return [];
   }
@@ -223,8 +283,14 @@ function checkDockerSocket(socketPath: string | undefined): readonly RuntimeProb
   if (!existsSync(socketPath)) {
     return [
       {
-        what: `The Docker socket ${socketPath} is not present in this container. Every deployment needs it.`,
-        fix: `add --mount type=bind,source=${socketPath},target=${socketPath} to docker run`,
+        what:
+          kind === "developer"
+            ? `The Docker socket ${socketPath} is not present. Every deployment needs it, and locally that means Docker itself is not running.`
+            : `The Docker socket ${socketPath} is not present in this container. Every deployment needs it.`,
+        fix:
+          kind === "developer"
+            ? "start Docker, then check it answers: docker version"
+            : `add --mount type=bind,source=${socketPath},target=${socketPath} to docker run`,
       },
     ];
   }
@@ -234,8 +300,14 @@ function checkDockerSocket(socketPath: string | undefined): readonly RuntimeProb
   } catch {
     return [
       {
-        what: `The Docker socket ${socketPath} is present but not accessible to uid ${process.getuid?.() ?? "?"}. The container is not a member of the host's docker group.`,
-        fix: `add --group-add "$(getent group docker | cut -d: -f3)" to docker run`,
+        what:
+          kind === "developer"
+            ? `The Docker socket ${socketPath} is present but not accessible to uid ${process.getuid?.() ?? "?"}.`
+            : `The Docker socket ${socketPath} is present but not accessible to uid ${process.getuid?.() ?? "?"}. The container is not a member of the host's docker group.`,
+        fix:
+          kind === "developer"
+            ? "check that your user can use Docker: docker version"
+            : `add --group-add "$(getent group docker | cut -d: -f3)" to docker run`,
       },
     ];
   }

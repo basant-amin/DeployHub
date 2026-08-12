@@ -26,9 +26,12 @@ id_rsa*
 *.sqlite3
 
 # Deployment state, logs, and project workspaces, wherever a local run put them.
+# `.deployhub-dev` is the developer runtime root: it normally lives under the home directory
+# and so is never in the context, but it is excluded in case DEPLOYHUB_ROOT points here.
 /data/
 /var/
 /logs/
+/.deployhub-dev/
 *.log
 
 # ---------------------------------------------------------------------------

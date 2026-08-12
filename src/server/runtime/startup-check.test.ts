@@ -6,7 +6,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runtimeConfigFromEnv, type RuntimeConfig } from "./composition";
-import { checkRuntime, assertRuntimeReady, formatProblems } from "./startup-check";
+import {
+  checkRuntime,
+  assertRuntimeReady,
+  formatProblems,
+  hintFor,
+  hostKindOf,
+} from "./startup-check";
 
 let root: string;
 
@@ -175,9 +181,91 @@ describe("reporting", () => {
     expect(text).toContain("sudo docs/ops/install.sh");
   });
 
+  it("closes with the hint it is given", () => {
+    const text = formatProblems([{ what: "x", fix: "y" }], "npm run dev:prepare");
+
+    expect(text).toContain("npm run dev:prepare");
+    expect(text).not.toContain("sudo docs/ops/install.sh");
+  });
+
   it("throws on a bad host and stays quiet on a good one", () => {
     const bad = configFor(join(root, "absent"));
     expect(() => assertRuntimeReady(bad, { dockerSocket: undefined })).toThrow(/cannot start/i);
     expect(() => assertRuntimeReady(prepare(), { dockerSocket: undefined })).not.toThrow();
+  });
+});
+
+/**
+ * `npm run dev` runs this check exactly as the containers do — that is what makes it worth
+ * trusting. What differs is the repair instruction, and it has to: `sudo docs/ops/install.sh` on a
+ * developer's machine creates a data root owned by uid 1000, which the next boot then rejects.
+ * Advice that produces a different problem is worse than none.
+ */
+describe("who prepares the host", () => {
+  it("reads a root inside the home directory as a developer's", () => {
+    expect(hostKindOf("/Users/dev/.deployhub-dev", "/Users/dev")).toBe("developer");
+    expect(hostKindOf("/Users/dev", "/Users/dev")).toBe("developer");
+  });
+
+  it("reads the server's data root as the installer's", () => {
+    expect(hostKindOf("/var/lib/deployhub", "/home/node")).toBe("system");
+  });
+
+  it("does not mistake a temporary directory for a developer's root", () => {
+    // macOS puts temp directories under /var/folders, which a rule about /var prefixes would
+    // misread — and every test above would then assert the wrong audience's text.
+    expect(hostKindOf(root, "/Users/dev")).toBe("system");
+  });
+
+  it("refuses identically either way; only the suggested command differs", () => {
+    const config = configFor(join(root, "absent"));
+
+    const asServer = checkRuntime(config, { dockerSocket: undefined, home: "/elsewhere" });
+    const asDeveloper = checkRuntime(config, { dockerSocket: undefined, home: root });
+
+    expect(asDeveloper).toHaveLength(asServer.length);
+  });
+
+  it("names dev:prepare, not the installer, when a developer's paths are missing", () => {
+    const config = configFor(join(root, "absent"));
+    const problems = checkRuntime(config, { dockerSocket: undefined, home: root });
+
+    const dataRoot = problems.find((problem) => problem.what.includes("data root"));
+    expect(dataRoot?.fix).toBe("npm run dev:prepare");
+    expect(dataRoot?.what).not.toContain("bind-mount");
+
+    const secrets = problems.find((problem) => problem.what.includes("secrets file"));
+    expect(secrets?.fix).toBe("npm run dev:prepare");
+  });
+
+  it("drops sudo from a developer's repair commands", () => {
+    const config = prepare();
+    const secrets = join(root, "secrets.json");
+    chmodSync(secrets, 0o644);
+
+    const problem = checkRuntime(config, { dockerSocket: undefined, home: root }).find((p) =>
+      p.what.includes("mode"),
+    );
+
+    expect(problem?.fix).toBe(`chmod 600 ${secrets}`);
+  });
+
+  it("blames Docker not running rather than a missing mount, locally", () => {
+    const problem = checkRuntime(prepare(), {
+      dockerSocket: join(root, "no-such.sock"),
+      home: root,
+    })[0];
+
+    expect(problem?.what).toContain("Docker itself is not running");
+    expect(problem?.fix).toContain("docker version");
+  });
+
+  it("closes the report with the command that fits the host", () => {
+    expect(hintFor(configFor("/Users/dev/.deployhub-dev"), { home: "/Users/dev" })).toContain(
+      "npm run dev:prepare",
+    );
+    expect(hintFor(configFor("/var/lib/deployhub"), { home: "/Users/dev" })).toContain(
+      "sudo docs/ops/install.sh",
+    );
   });
 });

@@ -7,11 +7,13 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "predev": "npm run dev:prepare",
     "dev": "next dev",
+    "dev:prepare": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/dev-prepare.ts",
     "build": "next build",
     "start": "next start",
-    "deployhub": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/deployhub.ts",
-    "worker": "node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/worker.ts",
+    "deployhub": "node --env-file-if-exists=.env.local --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/deployhub.ts",
+    "worker": "node --env-file-if-exists=.env.local --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/worker.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",
