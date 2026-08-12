@@ -17,7 +17,9 @@ export interface FieldSpec {
   readonly label: string;
   /** One line under the input. Says what the value is *for*, not what shape it must be. */
   readonly hint?: string;
-  readonly kind?: "text" | "number" | "textarea";
+  readonly kind?: "text" | "number" | "textarea" | "select";
+  /** Required for `select`, ignored otherwise. The value is what the domain receives. */
+  readonly options?: readonly { readonly value: string; readonly label: string }[];
   readonly placeholder?: string;
   /**
    * Left blank, the server fills it from the project name. The four of these are the difference
@@ -85,11 +87,27 @@ export const PROJECT_FORM: readonly FieldGroup[] = [
         placeholder: "main",
       },
       {
+        name: "config.gitAuth.method",
+        label: "Authentication",
+        kind: "select",
+        options: [
+          { value: "ssh-deploy-key", label: "SSH deploy key (recommended)" },
+          { value: "https-token", label: "HTTPS token" },
+        ],
+        hint: "A deploy key is scoped to one repository and can be read-only, so onboarding a private repository needs nobody's account token. Must match the URL above: a deploy key needs the SSH clone URL.",
+      },
+      {
         name: "config.gitCredentialRef",
         label: "Git credential",
-        hint: "The name of the entry in the secrets file — never the token itself.",
+        hint: "The name of the entry in the secrets file — never the key or token itself. Create one with: npm run git:keygen -- --ref <this value>",
         placeholder: "derived from the slug",
         derived: true,
+      },
+      {
+        name: "config.gitAuth.knownHostsRef",
+        label: "Known hosts override",
+        hint: "Leave blank. DeployHub verifies github.com against its own pinned host keys; set this only for GitHub Enterprise or a self-hosted server, naming a secrets entry that holds its known_hosts line.",
+        placeholder: "none — bundled GitHub host keys are used",
       },
     ],
   },
@@ -235,6 +253,9 @@ export const NUMERIC_FIELDS: ReadonlySet<string> = new Set(
 /** Defaults for a new project, so the shortest useful form is four fields long. */
 export const NEW_PROJECT_DEFAULTS: Readonly<Record<string, string>> = {
   "config.targetRef": "main",
+  // The recommended method, so the short path through this form is the safe one. A project that
+  // genuinely needs a token changes it, and the domain refuses the combination that cannot work.
+  "config.gitAuth.method": "ssh-deploy-key",
   "config.dockerfilePath": "Dockerfile",
   "config.buildContext": ".",
   "config.route.path": "/",

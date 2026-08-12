@@ -7,8 +7,11 @@
  *
  * Every command here was verified against real git — see `docs/ops/host-spike.md`.
  *
- * The credential never appears in argv. It is passed in the environment and read by an inline
- * credential helper, because a failed command's argv is written to the deployment log.
+ * Authentication is not this file's concern beyond opening and closing it. `auth-session.ts` turns
+ * the project's configured method into extra arguments and extra environment, and the sequence below
+ * is identical whether the repository is reached with a deploy key or a token. The credential never
+ * appears in argv either way, because a failed command's argv is written to the deployment log and
+ * its environment is not.
  */
 
 import {
@@ -26,11 +29,7 @@ import type { GitClient } from "@/core/ports";
 import { type CommandRequest, type CommandRunner, commandFailure } from "../command-runner";
 import type { SecretProvider } from "@/core/ports";
 import { type WorkspaceLayout, workspaceFor } from "../workspace";
-
-/** Read by the credential helper below. Never logged. */
-const TOKEN_VARIABLE = "DEPLOYHUB_GIT_TOKEN";
-
-const CREDENTIAL_HELPER = `!f() { echo username=x-access-token; echo "password=$${TOKEN_VARIABLE}"; }; f`;
+import { type AuthSession, openAuthSession } from "./auth-session";
 
 const CLONE_TIMEOUT_MILLIS = 300_000;
 const GIT_TIMEOUT_MILLIS = 120_000;
@@ -45,21 +44,36 @@ export class CommandGitClient implements GitClient {
   ) {}
 
   async checkOut(project: Project, ref: GitRef): Promise<Result<CommitSha>> {
-    const workspace = workspaceFor(this.options, project);
-    const credential = await this.secrets.resolveCredential(project.config.gitCredentialRef);
-    if (!credential.ok) {
-      return credential;
+    const session = await openAuthSession(project, this.secrets);
+    if (!session.ok) {
+      return session;
     }
-    const env = { [TOKEN_VARIABLE]: credential.value };
 
-    const prepared = await this.ensureWorkspace(project, workspace, env);
+    // The `finally` is why the session is opened here rather than inside each step: an SSH session
+    // holds a private key on disk, and every path out of this method — success, a failed fetch, a
+    // ref that does not exist — has to remove it.
+    try {
+      return await this.checkOutWith(project, ref, session.value);
+    } finally {
+      session.value.dispose();
+    }
+  }
+
+  private async checkOutWith(
+    project: Project,
+    ref: GitRef,
+    session: AuthSession,
+  ): Promise<Result<CommitSha>> {
+    const workspace = workspaceFor(this.options, project);
+
+    const prepared = await this.ensureWorkspace(project, workspace, session);
     if (!prepared.ok) {
       return prepared;
     }
 
     const fetched = await this.git(
       workspace,
-      env,
+      session,
       ["fetch", "--prune", "--tags", "--quiet", "origin"],
       GIT_TIMEOUT_MILLIS,
     );
@@ -67,7 +81,7 @@ export class CommandGitClient implements GitClient {
       return err(this.classifyFetchFailure(fetched.error));
     }
 
-    const sha = await this.resolve(workspace, env, ref);
+    const sha = await this.resolve(workspace, session, ref);
     if (!sha.ok) {
       return sha;
     }
@@ -76,7 +90,7 @@ export class CommandGitClient implements GitClient {
     // tracking branch would invite a merge where a reset is wanted.
     const checkedOut = await this.git(
       workspace,
-      env,
+      session,
       ["checkout", "--detach", "--force", "--quiet", sha.value],
       GIT_TIMEOUT_MILLIS,
     );
@@ -85,14 +99,14 @@ export class CommandGitClient implements GitClient {
     }
 
     // Remove ignored and untracked files too. A build must not see debris from the last one.
-    const cleaned = await this.git(workspace, env, ["clean", "-qfdx"], GIT_TIMEOUT_MILLIS);
+    const cleaned = await this.git(workspace, session, ["clean", "-qfdx"], GIT_TIMEOUT_MILLIS);
     return cleaned.ok ? ok(sha.value) : cleaned;
   }
 
   private async ensureWorkspace(
     project: Project,
     workspace: string,
-    env: Readonly<Record<string, string>>,
+    session: AuthSession,
   ): Promise<Result<void>> {
     const isRepository = await this.runner.run({
       command: "git",
@@ -100,10 +114,11 @@ export class CommandGitClient implements GitClient {
       timeoutMillis: GIT_TIMEOUT_MILLIS,
     });
     if (isRepository.ok && isRepository.value.exitCode === 0) {
-      // Already cloned. Keep the remote in step with the configuration in case it changed.
+      // Already cloned. Keep the remote in step with the configuration in case it changed —
+      // including a project moved from an https:// URL to its SSH form.
       const updated = await this.git(
         workspace,
-        env,
+        session,
         ["remote", "set-url", "origin", project.config.repositoryUrl],
         GIT_TIMEOUT_MILLIS,
       );
@@ -112,7 +127,7 @@ export class CommandGitClient implements GitClient {
 
     const cloned = await this.git(
       undefined,
-      env,
+      session,
       ["clone", "--quiet", project.config.repositoryUrl, workspace],
       CLONE_TIMEOUT_MILLIS,
     );
@@ -131,14 +146,14 @@ export class CommandGitClient implements GitClient {
    */
   private async resolve(
     workspace: string,
-    env: Readonly<Record<string, string>>,
+    session: AuthSession,
     ref: GitRef,
   ): Promise<Result<CommitSha>> {
     for (const candidate of [`refs/remotes/origin/${ref}^{commit}`, `${ref}^{commit}`]) {
       const resolved = await this.runner.run({
         command: "git",
         args: ["-C", workspace, "rev-parse", "--verify", "--quiet", candidate],
-        env,
+        env: session.env,
         timeoutMillis: GIT_TIMEOUT_MILLIS,
       });
       if (!resolved.ok) {
@@ -158,15 +173,15 @@ export class CommandGitClient implements GitClient {
 
   private async git(
     cwd: string | undefined,
-    env: Readonly<Record<string, string>>,
+    session: AuthSession,
     args: readonly string[],
     timeoutMillis: number,
   ): Promise<Result<string>> {
     const request: CommandRequest = {
       command: "git",
-      args: ["-c", `credential.helper=${CREDENTIAL_HELPER}`, ...args],
+      args: [...session.extraArgs, ...args],
       ...(cwd === undefined ? {} : { cwd }),
-      env,
+      env: session.env,
       timeoutMillis,
     };
     const result = await this.runner.run(request);
@@ -184,6 +199,12 @@ export class CommandGitClient implements GitClient {
    * They demand different responses — one is a configuration fix, the other might resolve on
    * its own — and telling them apart from git's exit code alone is impossible, so the message
    * is the only signal available.
+   *
+   * The SSH phrases are not interchangeable with the HTTPS ones. `host key verification failed`
+   * in particular has to land on the precondition side: it means the pinned host keys and the
+   * server disagree, which no amount of retrying fixes, and classifying it as transient would
+   * have the engine retry a deployment that can only fail the same way. `no such identity` and
+   * `invalid format` are the two ways a bad key in the secret store surfaces.
    */
   private classifyFetchFailure(error: DeploymentError): DeploymentError {
     const message = error.message.toLowerCase();
@@ -191,7 +212,12 @@ export class CommandGitClient implements GitClient {
       message.includes("authentication failed") ||
       message.includes("could not read username") ||
       message.includes("permission denied") ||
-      message.includes("access denied");
+      message.includes("access denied") ||
+      message.includes("host key verification failed") ||
+      message.includes("no such identity") ||
+      message.includes("invalid format") ||
+      message.includes("error in libcrypto") ||
+      message.includes("repository not found");
     return DeploymentError.of(
       looksLikeAuth ? "GIT_AUTH_FAILED" : "GIT_FETCH_FAILED",
       error.message,

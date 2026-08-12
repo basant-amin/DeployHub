@@ -156,8 +156,13 @@ Every external command was verified against a real Docker daemon (29.1.2) and re
   admission check explains a refusal while the constraint is what makes it correct under a race.
 - **Log sink** — append-only rows, opened with a redactor.
 - **Secret provider** — a single local JSON file that the adapter refuses to read unless it is mode
-  `0600`. **Read-only by design**: there is no write path, which is why the dashboard collects secret
-  _references_ and never secret values.
+  `0600`. **Read-only at runtime**: no write path is reachable from a request, which is why the
+  dashboard collects secret _references_ and never secret values. The one writer is
+  `secret-file-writer.ts`, used by the `git:keygen` operator command and imported by nothing else.
+- **Git authentication** — `ssh-deploy-key` or `https-token`, recorded explicitly in
+  `config.gitAuth` and validated against the repository URL's transport (D13). Deploy keys are the
+  recommended production method; host keys are pinned in the image, with an optional
+  `knownHostsRef` override. `StrictHostKeyChecking` is never disabled.
 - **Deploy lock** — a leased, fenced lock (`LockEpoch`), not a mutex, so a dead worker's grip expires.
 
 ### Runtime (`src/server/runtime`)

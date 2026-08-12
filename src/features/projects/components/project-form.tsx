@@ -166,6 +166,33 @@ function Field({
           aria-describedby={describedBy}
           className={cn(shared, "scroll-quiet resize-y py-2 font-mono text-[12.5px]")}
         />
+      ) : field.kind === "select" ? (
+        /* A closed set of values gets a closed control. The alternative — a text input validated by
+           the domain — would let an operator typo their way into an error message for a field where
+           the legal answers are worth *seeing*, and one of them carries a recommendation. */
+        <>
+          {/* The native disclosure arrow is kept deliberately: it is the one affordance that says
+              "these are the only answers", which is the reason this field is a select. */}
+          <select
+            id={field.name}
+            name={readOnly ? undefined : field.name}
+            defaultValue={value}
+            disabled={readOnly}
+            aria-invalid={invalid ? true : undefined}
+            aria-describedby={describedBy}
+            className={cn(shared, "h-9 py-0")}
+          >
+            {(field.options ?? []).map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {/* A disabled control submits nothing, so a read-only select would silently send an empty
+              method and be rejected as "must be a string". No select is fixed today; this is what
+              makes marking one fixed later a safe edit rather than a puzzle. */}
+          {readOnly && <input type="hidden" name={field.name} value={value} />}
+        </>
       ) : (
         <input
           id={field.name}

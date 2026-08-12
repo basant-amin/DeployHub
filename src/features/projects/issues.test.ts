@@ -138,6 +138,8 @@ describe("attribution against the domain", () => {
     "config.repositoryUrl": "not a url",
     "config.targetRef": "bad~ref",
     "config.gitCredentialRef": "Bad Ref!",
+    "config.gitAuth.method": "not-a-method",
+    "config.gitAuth.knownHostsRef": "Bad Ref!",
     "config.dockerfilePath": "/absolute/Dockerfile",
     "config.buildContext": "../escape",
     "config.imageRepository": "BAD CAPS",

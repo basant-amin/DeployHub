@@ -6,7 +6,13 @@
  * by nobody else. A vault is a later problem with a later port implementation.
  *
  * The file is re-read on every resolve rather than cached. Rotating a credential should mean
- * editing a file, not restarting a worker, and a deployment reads each secret once.
+ * changing an entry, not restarting a worker, and a deployment reads each secret once.
+ *
+ * **Read-only at runtime.** There is no write path here, which is why the dashboard collects secret
+ * *references* and never secret values, and why nothing reachable from a server action can write a
+ * credential. The one writer is `secret-file-writer.ts`, used by the `git:keygen` operator command
+ * and imported by nothing else — so the invariant is "no runtime write path, one operator writer"
+ * rather than "nothing can write".
  *
  * Shape:
  *

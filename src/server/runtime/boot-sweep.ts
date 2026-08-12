@@ -27,6 +27,7 @@
 import { type Result, DeploymentError, ok } from "@/core/shared";
 import type { Deployment } from "@/core/domain";
 
+import { sweepStaleSshIdentities } from "../adapters/git/ssh-key";
 import type { Platform } from "./composition";
 
 export interface SweepReport {
@@ -36,10 +37,18 @@ export interface SweepReport {
   readonly leasesReleased: number;
   /** Containers removed because they belonged to an abandoned deployment. */
   readonly containersRemoved: number;
+  /** Deploy-key directories removed because the process holding them is gone. */
+  readonly sshIdentitiesRemoved: number;
 }
 
 export async function runBootSweep(platform: Platform): Promise<Result<SweepReport>> {
   const now = platform.clock.now();
+
+  // First, and unconditionally. A worker killed with SIGKILL never ran its `finally`, so a deploy
+  // key may be sitting in the container's writable layer — and unlike the record-keeping below,
+  // this is a secret at rest rather than a stalled deployment. It cannot fail the sweep: the
+  // function never throws, and it only ever removes directories whose owning process is gone.
+  const identities = sweepStaleSshIdentities();
 
   const expired = await platform.lock.findExpired(now);
   if (!expired.ok) {
@@ -76,7 +85,12 @@ export async function runBootSweep(platform: Platform): Promise<Result<SweepRepo
     }
   }
 
-  return ok({ recovered, leasesReleased, containersRemoved });
+  return ok({
+    recovered,
+    leasesReleased,
+    containersRemoved,
+    sshIdentitiesRemoved: identities.removed.length,
+  });
 }
 
 /**

@@ -20,6 +20,10 @@ function submission(overrides: Readonly<Record<string, string>> = {}): FormData 
     ...newProjectValues(),
     name: "One Community",
     "config.repositoryUrl": "https://github.com/acme/one-community",
+    // An HTTPS clone URL, so the method has to be the one that authenticates over HTTPS. The
+    // form's own default is `ssh-deploy-key`, which pairs with an SSH URL — the two are checked
+    // against each other by the domain, so a fixture cannot leave them contradicting.
+    "config.gitAuth.method": "https-token",
     "config.containerPort": "3000",
     "config.route.host": "app.example.com",
     ...overrides,
@@ -203,10 +207,14 @@ describe("valuesFromProject", () => {
     );
     const values = valuesFromProject(project.toJSON());
 
-    // Build args are legitimately empty here; everything else must have a value, or an input would
-    // render blank and quietly clear a configured setting on the next save.
+    // Two fields are legitimately empty; everything else must have a value, or an input would
+    // render blank and quietly clear a configured setting on the next save. `knownHostsRef` is the
+    // interesting one: blank *is* its configured value — it means "verify github.com against the
+    // bundled host keys" — so round-tripping it as blank loses nothing.
+    const mayBeBlank = new Set(["config.buildArgs", "config.gitAuth.knownHostsRef"]);
+
     for (const name of PROJECT_FIELD_NAMES) {
-      if (name === "config.buildArgs") {
+      if (mayBeBlank.has(name)) {
         continue;
       }
       expect(values[name], name).not.toBe("");

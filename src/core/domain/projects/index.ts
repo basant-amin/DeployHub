@@ -5,6 +5,8 @@ export { PublicRoute } from "./public-route";
 export { HealthCheckSpec } from "./health-check-spec";
 export type { HealthCheckSpecInput } from "./health-check-spec";
 export { BuildArgs } from "./build-args";
+export { GIT_AUTH_METHODS, GitAuth } from "./git-auth";
+export type { GitAuthInput, GitAuthMethod } from "./git-auth";
 export { ImageRetention, MINIMUM_IMAGE_RETENTION } from "./image-retention";
 export { DeployConfig } from "./deploy-config";
 export type { DeployConfigInput } from "./deploy-config";

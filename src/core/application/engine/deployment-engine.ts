@@ -433,7 +433,15 @@ export class DeploymentEngine {
       return deployable;
     }
 
-    for (const ref of [config.gitCredentialRef, config.runtimeEnvRef]) {
+    // `knownHostsRef` is optional and usually unset — the SSH adapter has bundled host keys. When
+    // an operator has set it, though, it is load-bearing: host-key verification will use it, so a
+    // missing entry has to fail here rather than as a verification failure mid-fetch.
+    const refs = [config.gitCredentialRef, config.runtimeEnvRef];
+    if (config.gitAuth.knownHostsRef !== undefined) {
+      refs.push(config.gitAuth.knownHostsRef);
+    }
+
+    for (const ref of refs) {
       const present = await this.ports.secrets.exists(ref);
       if (!present.ok) {
         return present;

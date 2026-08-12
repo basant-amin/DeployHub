@@ -85,8 +85,14 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runner
 #      (`src/server/adapters/git/git-client.ts`). Its credential helper is an inline shell
 #      function, so a POSIX shell is required too — the base image provides it.
 # ca-certificates: HTTPS to GitHub, and the post-promotion probe of the public route.
+# openssh-client: the SSH deploy-key transport, which is the recommended way to reach a private
+#      repository — a repository-scoped read-only key rather than someone's account token. It is
+#      *not* implied by installing git: on Debian openssh-client is a recommendation rather than a
+#      dependency, and `--no-install-recommends` therefore leaves it out. Without it git reports
+#      `cannot run ssh: No such file or directory` at the fetch step. It also supplies
+#      `ssh-keygen`, which `scripts/git-keygen.ts` uses to provision a deploy key.
 RUN apt-get update \
- && apt-get install --no-install-recommends --yes git ca-certificates \
+ && apt-get install --no-install-recommends --yes git ca-certificates openssh-client \
  && rm -rf /var/lib/apt/lists/*
 
 # The Docker client. No daemon, no containerd, no runc — this image cannot run containers, it

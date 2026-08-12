@@ -14,6 +14,7 @@
     "start": "next start",
     "deployhub": "node --env-file-if-exists=.env.local --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/deployhub.ts",
     "worker": "node --env-file-if-exists=.env.local --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/worker.ts",
+    "git:keygen": "node --env-file-if-exists=.env.local --experimental-transform-types --disable-warning=ExperimentalWarning --import ./scripts/register-alias.mjs scripts/git-keygen.ts",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "typecheck": "tsc --noEmit",

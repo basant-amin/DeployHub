@@ -357,6 +357,64 @@ This file is **not** `.env`, is not in the repository, and is never copied into 
 
 ---
 
+## Onboarding a private repository
+
+The one-time procedure for each repository DeployHub deploys. It ends with a **read-only key scoped
+to that one repository** — nobody's personal access token, and nothing granted at account level
+([D13](architecture/decisions.md#d13--repository-scoped-ssh-deploy-keys-with-the-method-recorded-in-configuration)).
+
+**1. Generate the deploy key.** There is no Node on the server — the runtime lives in the image — so
+this runs through the container that already mounts the secret store:
+
+```bash
+docker exec deployhub-worker node --experimental-transform-types \
+  --disable-warning=ExperimentalWarning \
+  --import /opt/deployhub/scripts/register-alias.mjs \
+  /opt/deployhub/scripts/git-keygen.ts --ref deployhub-demo.git.credentials
+```
+
+Locally it is `npm run git:keygen -- --ref deployhub-demo.git.credentials`.
+
+The private key goes straight into `secrets.json` under that reference, atomically, and is **never
+printed**. The command prints the public key and nothing else worth copying.
+
+**2. Register the public key on the repository.** GitHub → the repository → Settings → Deploy keys →
+Add deploy key. Paste the printed line. **Leave "Allow write access" unchecked** — deployment only
+ever reads, and an unchecked box is the difference between a leaked key being an inconvenience and
+being an incident.
+
+**3. Register the project** through `/setup`, with:
+
+| Field                | Value                                                   |
+| -------------------- | ------------------------------------------------------- |
+| Repository URL       | the **SSH** clone URL — `git@github.com:owner/repo.git` |
+| Authentication       | `SSH deploy key`                                        |
+| Git credential       | the same reference passed to `--ref`                    |
+| Known hosts override | blank                                                   |
+
+The URL and the method are checked against each other when the project is saved: a deploy key with
+an `https://` URL is refused there rather than discovered at the fetch step of a deployment that has
+already started.
+
+**4. Deploy.**
+
+**Rotating a key.** `--force` replaces an existing entry. The public key already on the repository
+stops working the moment you do, so add the new one to Deploy keys _before_ removing the old, then
+redeploy to confirm. Lost the public key? `--show-public --ref <ref>` re-derives it from what is
+stored, and never prints the private half.
+
+**GitHub Enterprise or a self-hosted server.** DeployHub verifies `github.com` against host keys
+pinned in the image, which is why the normal case needs no setting. For another host, put its
+`known_hosts` line in the secret store and name that entry in the project's **Known hosts override**.
+Host-key verification is never disabled — if the pinned keys and the server ever disagree, every
+deployment fails closed with `GIT_AUTH_FAILED`, which is the correct direction to fail.
+
+**HTTPS tokens still work.** Choose `HTTPS token`, use the `https://` clone URL, and put the token at
+the credential reference. It is kept for compatibility rather than recommended: a token is scoped to
+a person's whole account.
+
+---
+
 ## Persistent storage
 
 Everything DeployHub must not lose lives under one directory. **Prepare it before the first
@@ -384,12 +442,12 @@ sudo docs/ops/install.sh --dry-run                                # show, change
 sudo docs/ops/install.sh --root /srv/deployhub --uid 1500 --gid 1500
 ```
 
-| Path                        | Contents                                                     |
-| --------------------------- | ------------------------------------------------------------ |
-| `deployhub.db`              | Projects, deployments, releases, leases, log lines           |
-| `deployhub.db-wal`, `…-shm` | WAL sidecars. Must sit beside the database on the same mount |
-| `projects/<slug>/repo`      | One git checkout per project                                 |
-| `secrets.json`              | Secret values, mode `0600`, read-only to the platform        |
+| Path                        | Contents                                                                       |
+| --------------------------- | ------------------------------------------------------------------------------ |
+| `deployhub.db`              | Projects, deployments, releases, leases, log lines                             |
+| `deployhub.db-wal`, `…-shm` | WAL sidecars. Must sit beside the database on the same mount                   |
+| `projects/<slug>/repo`      | One git checkout per project                                                   |
+| `secrets.json`              | Secret values, mode `0600`. Read-only at runtime; written only by `git:keygen` |
 
 The database runs in WAL mode because the web process and the worker are separate processes
 sharing one file. WAL requires the `-wal` and `-shm` sidecars to live on the same filesystem as

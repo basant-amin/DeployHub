@@ -28,6 +28,26 @@ export const GitRepositoryUrl: Codec<GitRepositoryUrl> = brandedString<GitReposi
 });
 
 /**
+ * How git will reach a repository at this URL.
+ *
+ * Not a configuration choice — git derives it from the URL, and no setting can override it. It is
+ * named here because the credential a repository needs is a consequence of it: a token is an
+ * HTTPS mechanism and a deploy key is an SSH one, and neither works over the other transport.
+ * `GitAuth` uses this to refuse a combination that could never authenticate.
+ */
+export type GitTransport = "https" | "ssh";
+
+/**
+ * The codec admits exactly three forms, and only one of them is HTTPS — so anything else is SSH.
+ * Written as an allow-list on the HTTPS side rather than a match on the two SSH shapes, because a
+ * URL this function has not anticipated must not be treated as the transport that sends a
+ * credential in a request header.
+ */
+export function gitTransportOf(url: GitRepositoryUrl | string): GitTransport {
+  return url.startsWith("https://") ? "https" : "ssh";
+}
+
+/**
  * A branch or tag name, validated against git's own ref rules.
  *
  * The rejected characters are not cosmetic: git's revision operators would make a

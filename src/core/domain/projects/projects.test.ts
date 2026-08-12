@@ -14,6 +14,7 @@ import { PublicRoute } from "./public-route";
 const validConfig = Object.freeze({
   repositoryUrl: "git@github.com:elemta/one-community.git",
   gitCredentialRef: "one-community.git.credentials",
+  gitAuth: { method: "ssh-deploy-key" },
   targetRef: "main",
   dockerfilePath: "Dockerfile",
   buildContext: ".",
@@ -189,6 +190,115 @@ describe("DeployConfig", () => {
     );
     expect(error.code).toBe("DEPLOY_CONFIG_INVALID");
     expect(error.issues).toHaveLength(3);
+  });
+
+  /**
+   * The credential a repository needs is decided by its transport, so these two fields cannot be
+   * validated apart. Each of the four combinations is checked, because the two that must fail are
+   * the whole reason the rule exists — and because catching them here is what stops a deployment
+   * from being queued, locked, and started before anyone learns the configuration cannot work.
+   */
+  describe("git authentication", () => {
+    const ssh = "git@github.com:elemta/one-community.git";
+    const https = "https://github.com/elemta/one-community";
+
+    function configWith(repositoryUrl: string, gitAuth: unknown) {
+      return DeployConfig.create({ ...validConfig, repositoryUrl, gitAuth });
+    }
+
+    it("accepts a deploy key with an SSH URL", () => {
+      const config = expectOk(configWith(ssh, { method: "ssh-deploy-key" }));
+      expect(config.gitAuth.method).toBe("ssh-deploy-key");
+      expect(config.gitAuth.transport).toBe("ssh");
+    });
+
+    it("accepts a token with an HTTPS URL", () => {
+      const config = expectOk(configWith(https, { method: "https-token" }));
+      expect(config.gitAuth.method).toBe("https-token");
+      expect(config.gitAuth.transport).toBe("https");
+    });
+
+    it("refuses a deploy key with an HTTPS URL, naming the field to change", () => {
+      const error = expectErr(configWith(https, { method: "ssh-deploy-key" }));
+      expect(error.code).toBe("DEPLOY_CONFIG_INVALID");
+      expect(error.issues.join(" ")).toContain("gitAuth.method");
+      expect(error.issues.join(" ")).toContain("authenticates over ssh");
+    });
+
+    it("refuses a token with an SSH URL", () => {
+      const error = expectErr(configWith(ssh, { method: "https-token" }));
+      expect(error.issues.join(" ")).toContain("gitAuth.method");
+      expect(error.issues.join(" ")).toContain("authenticates over https");
+    });
+
+    it("refuses a method it does not implement, rather than falling back to one", () => {
+      // `github-app` is the intended third method and is deliberately not implemented. Accepting
+      // the name and silently authenticating some other way would be the worst of both.
+      for (const method of ["github-app", "", "HTTPS-TOKEN", 7, null]) {
+        expect(configWith(https, { method }).ok, JSON.stringify(method)).toBe(false);
+      }
+    });
+
+    /**
+     * A project stored before the method was recorded. Every one of them used a token, because that
+     * was the only mechanism the git adapter had — so this is the only reading that could be true,
+     * and it is what lets an existing project keep deploying with no migration.
+     */
+    it("reads a config with no gitAuth as an HTTPS token", () => {
+      const { gitAuth: _omitted, ...legacy } = { ...validConfig, repositoryUrl: https };
+      const config = expectOk(DeployConfig.create(legacy));
+      expect(config.gitAuth.method).toBe("https-token");
+      expect(config.gitAuth.knownHostsRef).toBeUndefined();
+    });
+
+    it("round-trips through JSON, omitting an unset override rather than writing null", () => {
+      const config = expectOk(configWith(ssh, { method: "ssh-deploy-key" }));
+      const json = config.toJSON();
+      expect(json.gitAuth).toEqual({ method: "ssh-deploy-key" });
+
+      const reloaded = expectOk(DeployConfig.create(json));
+      expect(reloaded.gitAuth.equals(config.gitAuth)).toBe(true);
+    });
+
+    describe("the known-hosts override", () => {
+      it("is absent by default, which means the bundled GitHub host keys", () => {
+        const config = expectOk(configWith(ssh, { method: "ssh-deploy-key" }));
+        expect(config.gitAuth.knownHostsRef).toBeUndefined();
+      });
+
+      it("treats an empty string as absent, because that is what the form submits", () => {
+        const config = expectOk(configWith(ssh, { method: "ssh-deploy-key", knownHostsRef: "" }));
+        expect(config.gitAuth.knownHostsRef).toBeUndefined();
+      });
+
+      it("is kept when it names a valid secret", () => {
+        const config = expectOk(
+          configWith(ssh, { method: "ssh-deploy-key", knownHostsRef: "enterprise.known-hosts" }),
+        );
+        expect(config.gitAuth.knownHostsRef).toBe("enterprise.known-hosts");
+        expect(config.toJSON().gitAuth).toEqual({
+          method: "ssh-deploy-key",
+          knownHostsRef: "enterprise.known-hosts",
+        });
+      });
+
+      it("is refused rather than ignored when the method cannot use it", () => {
+        // A host-key setting an operator believes is in effect but is not would be the worst kind
+        // of silence, so an unusable one is an error.
+        const error = expectErr(
+          configWith(https, { method: "https-token", knownHostsRef: "enterprise.known-hosts" }),
+        );
+        expect(error.issues.join(" ")).toContain("gitAuth.knownHostsRef");
+        expect(error.issues.join(" ")).toContain("only applies to ssh-deploy-key");
+      });
+
+      it("is refused when it is not a valid secret reference", () => {
+        const error = expectErr(
+          configWith(ssh, { method: "ssh-deploy-key", knownHostsRef: "Not A Ref!" }),
+        );
+        expect(error.issues.join(" ")).toContain("gitAuth.knownHostsRef");
+      });
+    });
   });
 
   it("surfaces a nested failure with a readable path", () => {

@@ -36,7 +36,8 @@ export { Actor, IdempotencyKey } from "./actor";
 export { Duration, Timestamp } from "./time";
 
 // -- Source -----------------------------------------------------------------
-export { CommitSha, GitRef, GitRepositoryUrl } from "./git";
+export { CommitSha, GitRef, GitRepositoryUrl, gitTransportOf } from "./git";
+export type { GitTransport } from "./git";
 
 // -- Runtime handles --------------------------------------------------------
 export { ContainerId, ContainerName, ContainerPort } from "./container";

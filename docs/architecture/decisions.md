@@ -278,3 +278,75 @@ with a single implementation is the speculative generality this project's standi
 constraints forbid, and the seam is easier to design correctly with a real second case
 in hand. D8 stays documented so that case starts from a decision rather than a blank
 page.
+
+---
+
+## D13 — Repository-scoped SSH deploy keys, with the method recorded in configuration
+
+**Decision.** A project records **how** it authenticates to its repository, in
+`config.gitAuth.method`, and the supported values are `ssh-deploy-key` and
+`https-token`. SSH deploy keys are the recommended production method. The HTTPS
+token path is kept, unchanged, as a compatibility option.
+
+**Why the method is configuration rather than an inference.** It could be derived
+from the repository URL today: each method maps onto exactly one transport, and git
+picks the transport from the URL regardless of what any setting says. That stops
+being true the moment a GitHub App is added, because an installation token and a
+personal access token both travel over HTTPS — so a design that infers the method
+would need replacing at exactly the point it was supposed to extend. Recording it
+also makes "how does this project authenticate" a stored fact an operator can audit,
+rather than something a reader has to work out from a URL.
+
+**Why deploy keys are the recommended method.** DeployHub deploys repositories owned
+by other people. Requiring an HTTPS token means requiring a _person's_ credential —
+scoped to their whole account, revoked when they leave, and impossible to grant
+narrowly. A deploy key is scoped by GitHub to a single repository, cannot be attached
+to a second one, and can be read-only, which is all a deployment needs. Onboarding a
+client's private repository therefore costs them one public key in one repository's
+settings, and nothing about their account.
+
+**The pairing is validated in the domain.** `DeployConfig` refuses a method whose
+transport disagrees with its repository URL. It is the only cross-field rule in that
+object, and it earns the exception: both halves are needed to see the problem, and the
+alternative is a deployment that is queued, locked, and started before failing at the
+fetch step with a message about a credential rather than about a configuration that
+could never have worked.
+
+**Host keys are pinned and bundled.** `StrictHostKeyChecking=yes` needs something to
+verify against, and a container inherits no `known_hosts`. Accepting the key on first
+use, or running `ssh-keyscan` at deploy time, are both verification in name only. So
+GitHub's published host keys ship in the image, and `gitAuth.knownHostsRef` is an
+optional override for GitHub Enterprise or a self-hosted server. The consequence is
+accepted deliberately: if GitHub rotates a key and the bundled list is stale, every
+deployment **fails closed** rather than trusting an unverified host.
+
+**The private key touches disk, briefly and narrowly.** `ssh` will not read a key from
+an environment variable, so an SSH deployment writes one to a `0700` directory as a
+`0600` file, outside the workspace — the workspace is what `docker build` streams as
+its build context, and a key there could reach an image layer. It is removed in a
+`finally`, and swept at worker startup for the case where a `SIGKILL` meant no
+`finally` ran. The sweep only ever removes a direct child of one known directory whose
+name encodes a pid that is no longer running and whose owner is the current uid.
+
+**Provisioning is a CLI, not a dashboard button.** `npm run git:keygen` generates the
+pair, stores the private half in the secret store atomically, and prints only the
+public half. The alternative first-run procedure was "generate a key by hand, then
+edit `secrets.json` in an editor", and hand-editing the file that holds every
+project's credentials is how that file eventually gets corrupted. A dashboard button
+is a later enhancement; the CLI is what makes the first real deployment safe.
+
+**Rejected.** Adding a write method to the `SecretProvider` port. That port being
+read-only is why the dashboard collects secret _references_ and never values, and why
+nothing reachable from a server action can write a credential. The writer is a
+separate module used by one operator command instead, so the invariant becomes precise
+rather than weaker: no runtime write path, one operator writer.
+
+**Rejected.** Generating keys with `node:crypto`. It emits PKCS#8 and SPKI, while
+GitHub needs the `ssh-ed25519 AAAA…` authorized-keys form and OpenSSH needs its own
+private-key format. Hand-rolling SSH wire encoding to avoid a binary the image already
+installs for the transport itself is not a good trade.
+
+**Rejected.** Implementing GitHub App support now. It is the intended third method and
+this shape is what makes adding it additive — one enum member, its own fields inside
+`GitAuth`, and one more branch in `openAuthSession`. Building it before a repository
+needs it would be speculative.

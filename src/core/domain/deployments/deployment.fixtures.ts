@@ -99,6 +99,9 @@ export const candidate: CandidateContainer = unwrapOrThrow(
 export const validRawConfig = Object.freeze({
   repositoryUrl: "git@github.com:elemta/one-community.git",
   gitCredentialRef: "one-community.git.credentials",
+  // An SSH clone URL, so the method has to be the one that authenticates over SSH. The pairing is
+  // enforced by `DeployConfig`, which is why this fixture cannot omit it.
+  gitAuth: { method: "ssh-deploy-key" },
   targetRef: "main",
   dockerfilePath: "Dockerfile",
   buildContext: ".",

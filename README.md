@@ -69,17 +69,18 @@ this repository.
 
 ## Scripts
 
-| Script                | Description                                                                       |
-| --------------------- | --------------------------------------------------------------------------------- |
-| `npm run dev`         | Start the Next.js dev server                                                      |
-| `npm run dev:prepare` | Prepare the local runtime root and `.env.local` (runs automatically before `dev`) |
-| `npm run build`       | Production build                                                                  |
-| `npm run start`       | Serve the production build                                                        |
-| `npm run lint`        | ESLint (flat config)                                                              |
-| `npm run typecheck`   | `tsc --noEmit` (strict)                                                           |
-| `npm run test`        | Run the Vitest suite once                                                         |
-| `npm run test:watch`  | Vitest in watch mode                                                              |
-| `npm run format`      | Format the repo with Prettier                                                     |
+| Script                | Description                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `npm run dev`         | Start the Next.js dev server                                                       |
+| `npm run dev:prepare` | Prepare the local runtime root and `.env.local` (runs automatically before `dev`)  |
+| `npm run git:keygen`  | Generate a repository deploy key into the secret store; prints only the public key |
+| `npm run build`       | Production build                                                                   |
+| `npm run start`       | Serve the production build                                                         |
+| `npm run lint`        | ESLint (flat config)                                                               |
+| `npm run typecheck`   | `tsc --noEmit` (strict)                                                            |
+| `npm run test`        | Run the Vitest suite once                                                          |
+| `npm run test:watch`  | Vitest in watch mode                                                               |
+| `npm run format`      | Format the repo with Prettier                                                      |
 
 ## Tech stack
 
